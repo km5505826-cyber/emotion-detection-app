@@ -283,7 +283,7 @@ html, body, [class*="css"], .stApp {{
 }}
 
 .block-container {{
-    max-width: 980px !important;
+    max-width: 950px !important;
     padding-top: 1rem !important;
     padding-bottom: 4rem !important;
     position: relative;
@@ -569,11 +569,11 @@ div[data-testid="stCameraInput"] video {{
     border: 1.5px solid {capsule_border};
     box-shadow: {capsule_glow};
     border-radius: 22px;
-    padding: 16px 20px;
+    padding: 18px 22px;
     margin-bottom: 14px;
 }}
 .badge-main {{
-    font-size: 1.65rem;
+    font-size: 1.75rem;
     font-weight: 800;
     margin-top: 4px;
 }}
@@ -601,19 +601,19 @@ div[data-testid="stCameraInput"] video {{
     background: {card_bg};
     border: 1.5px solid {capsule_border};
     box-shadow: {capsule_glow};
-    border-radius: 24px;
-    padding: 20px 24px;
-    margin-top: 6px;
-    margin-bottom: 18px;
-    backdrop-filter: blur(18px);
+    border-radius: 22px;
+    padding: 16px 20px;
+    margin-top: 14px;
+    margin-bottom: 14px;
+    backdrop-filter: blur(16px);
 }}
 .chat-bubble-ai {{
     background: {chat_ai_bg};
     border: 1px solid {capsule_border};
     border-radius: 16px 16px 16px 4px;
-    padding: 12px 18px;
-    font-size: 0.92rem;
-    line-height: 1.5;
+    padding: 11px 16px;
+    font-size: 0.90rem;
+    line-height: 1.45;
     margin-bottom: 10px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }}
@@ -621,13 +621,13 @@ div[data-testid="stCameraInput"] video {{
     background: {chat_user_bg};
     border: 1px solid {accent_tint};
     border-radius: 16px 16px 4px 16px;
-    padding: 12px 18px;
-    font-size: 0.92rem;
-    line-height: 1.5;
+    padding: 11px 16px;
+    font-size: 0.90rem;
+    line-height: 1.45;
     margin-bottom: 10px;
     text-align: right;
     margin-left: auto;
-    max-width: 80%;
+    max-width: 85%;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }}
 
@@ -638,17 +638,17 @@ div[data-testid="stCameraInput"] video {{
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: {text_muted};
-    margin: 8px 0 8px 0;
+    margin: 8px 0 6px 0;
 }}
 .preset-grid div[data-testid="stButton"] button {{
-    padding: 0.55rem 1rem !important;
-    font-size: 0.85rem !important;
+    padding: 0.45rem 0.85rem !important;
+    font-size: 0.82rem !important;
     border-radius: 9999px !important;
     white-space: normal !important;
     text-align: center !important;
-    line-height: 1.3 !important;
+    line-height: 1.25 !important;
     height: 100% !important;
-    min-height: 44px !important;
+    min-height: 40px !important;
 }}
 
 .history-item {{
@@ -1297,14 +1297,10 @@ else:
                     {"role": "ai", "content": get_initial_ai_greeting(dominant_label, dominant_conf)}
                 ]
 
+        col_view, col_stats = st.columns([1.1, 1], gap="medium")
         rendered_frame = draw_clean_bounding(image_np, valid, is_dark)
 
-        # -------------------------------------------------------------
-        # 1. TOP ROW: OPTICAL FEED (LEFT) & METRIC/GRAPH (RIGHT)
-        # -------------------------------------------------------------
-        col_img, col_graph = st.columns([1.05, 1.0], gap="medium")
-
-        with col_img:
+        with col_view:
             st.markdown(
                 f"""
                 <div class="clean-panel">
@@ -1325,124 +1321,124 @@ else:
                 unsafe_allow_html=True,
             )
 
-        with col_graph:
-            res_primary = valid[0]
-            dom_emotion = res_primary["dominant_emotion"].lower()
-            conf = float(res_primary["emotion"][dom_emotion])
+        with col_stats:
+            for i, res in enumerate(valid):
+                dom_emotion = res["dominant_emotion"].lower()
+                conf = float(res["emotion"][dom_emotion])
 
-            if conf < 25:
-                display_title = "Ambiguous / Inconclusive"
-                display_emoji = "🤔"
-            else:
-                display_title = dom_emotion.capitalize()
-                display_emoji = EMOJI_MAP.get(dom_emotion, "•")
+                if conf < 25:
+                    display_title = "Ambiguous / Inconclusive"
+                    display_emoji = "🤔"
+                else:
+                    display_title = dom_emotion.capitalize()
+                    display_emoji = EMOJI_MAP.get(dom_emotion, "•")
 
-            st.markdown(
-                f"""
-                <div class="metric-badge">
-                    <div style="font-size:0.7rem; font-weight:700; text-transform:uppercase; color:{text_muted};">
-                        Primary Classification
-                    </div>
-                    <div class="badge-main">
-                        <span class="raw-emoji">{display_emoji}</span>
-                        <span class="shimmer-txt">{display_title}</span>
-                        <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({conf:.1f}%)</span>
-                    </div>
-                    <div style="height: 8px; width: 100%; background: rgba(51, 65, 85, 0.6); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.2);">
-                        <div style="height: 100%; width: {min(conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; margin-top: 6px; font-size: 0.68rem; color: {text_muted}; font-weight: 700;">
-                        <span>Confidence: {conf:.1f}%</span>
-                        <span>Gate: 25%</span>
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-
-            st.markdown('<div class="clean-panel">', unsafe_allow_html=True)
-            render_live_animated_bars(res_primary["emotion"], dom_emotion, is_dark)
-            st.markdown("</div>", unsafe_allow_html=True)
-
-        # -------------------------------------------------------------
-        # 2. FULL-WIDTH EMPATHETIC COMPANION (BENEATH IMAGE & GRAPH)
-        # -------------------------------------------------------------
-        st.markdown(
-            f"""
-            <div class="chat-capsule-container">
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
-                    <span style="font-size: 1.35rem;">🫧</span>
-                    <div class="ambient-glow-text" style="font-weight: 800; font-size: 1.15rem;">
-                        Empathetic Mood Companion
-                    </div>
-                </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Active conversation thread
-        for msg in st.session_state.chat_messages:
-            if msg["role"] == "ai":
                 st.markdown(
-                    f'<div class="chat-bubble-ai"><strong>Companion:</strong> {msg["content"]}</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f'<div class="chat-bubble-user"><strong>You:</strong> {msg["content"]}</div>',
+                    f"""
+                    <div class="metric-badge">
+                        <div style="font-size:0.7rem; font-weight:700; text-transform:uppercase; color:{text_muted};">
+                            Subject {i + 1} · Classification
+                        </div>
+                        <div class="badge-main">
+                            <span class="raw-emoji">{display_emoji}</span>
+                            <span class="shimmer-txt">{display_title}</span>
+                            <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({conf:.1f}%)</span>
+                        </div>
+                        <div style="height: 8px; width: 100%; background: rgba(51, 65, 85, 0.6); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.2);">
+                            <div style="height: 100%; width: {min(conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
+                        </div>
+                        <div style="display: flex; justify-content: space-between; margin-top: 6px; font-size: 0.68rem; color: {text_muted}; font-weight: 700;">
+                            <span>Confidence: {conf:.1f}%</span>
+                            <span>Gate: 25%</span>
+                        </div>
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
 
-        # 3 Quick-Choice Preset Buttons
-        presets = EMOTION_PRESETS.get(dom_emotion, EMOTION_PRESETS["neutral"])
-        st.markdown(
-            f'<div class="preset-title">✨ Quick Choose (Or Type Below):</div><div class="preset-grid">',
-            unsafe_allow_html=True,
-        )
+                # =============================================================
+                # INTERACTIVE EMOTION-MIRRORING AI CHAT + 3 REASON PRESETS
+                # =============================================================
+                st.markdown(
+                    f"""
+                    <div class="chat-capsule-container">
+                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
+                            <span style="font-size: 1.25rem;">🫧</span>
+                            <div class="ambient-glow-text" style="font-weight: 800; font-size: 1rem;">
+                                Empathetic Mood Companion
+                            </div>
+                        </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-        p_cols = st.columns(3)
-        selected_preset = None
+                # Render active conversation thread
+                for msg in st.session_state.chat_messages:
+                    if msg["role"] == "ai":
+                        st.markdown(
+                            f'<div class="chat-bubble-ai"><strong>Companion:</strong> {msg["content"]}</div>',
+                            unsafe_allow_html=True,
+                        )
+                    else:
+                        st.markdown(
+                            f'<div class="chat-bubble-user"><strong>You:</strong> {msg["content"]}</div>',
+                            unsafe_allow_html=True,
+                        )
 
-        for p_idx, preset_text in enumerate(presets):
-            with p_cols[p_idx]:
-                if st.button(preset_text, key=f"preset_btn_primary_{p_idx}"):
-                    selected_preset = preset_text
+                # Quick 3 Preset Options (One-click choice)
+                presets = EMOTION_PRESETS.get(dom_emotion, EMOTION_PRESETS["neutral"])
+                st.markdown(
+                    f'<div class="preset-title">✨ Quick Choose (Or Type Below):</div><div class="preset-grid">',
+                    unsafe_allow_html=True,
+                )
 
-        st.markdown("</div>", unsafe_allow_html=True)
+                p_cols = st.columns(3)
+                selected_preset = None
 
-        # Trigger quick preset selection
-        if selected_preset:
-            st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
-            if len(st.session_state.history) > 0:
-                st.session_state.history[-1]["User_Reflection"] = selected_preset
-            bot_reply = generate_companion_reply(selected_preset, dom_emotion)
-            st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-            if dom_emotion in ["happy", "surprise"]:
-                st.balloons()
-            st.rerun()
+                for p_idx, preset_text in enumerate(presets):
+                    with p_cols[p_idx]:
+                        if st.button(preset_text, key=f"preset_btn_{i}_{p_idx}"):
+                            selected_preset = preset_text
 
-        # Freeform text chat row
-        chat_col_input, chat_col_btn = st.columns([4.2, 1.1])
-        with chat_col_input:
-            user_chat_text = st.text_input(
-                "Message Companion",
-                placeholder="Or type your own reason here...",
-                label_visibility="collapsed",
-                key="user_dialogue_input_primary",
-            )
-        with chat_col_btn:
-            if st.button("Send 🫧", key="send_chat_btn_primary"):
-                if user_chat_text.strip():
-                    st.session_state.chat_messages.append({"role": "user", "content": user_chat_text.strip()})
+                st.markdown("</div>", unsafe_allow_html=True)
+
+                # Trigger preset submission if clicked
+                if selected_preset:
+                    st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
                     if len(st.session_state.history) > 0:
-                        st.session_state.history[-1]["User_Reflection"] = user_chat_text.strip()
-                    bot_reply = generate_companion_reply(user_chat_text.strip(), dom_emotion)
+                        st.session_state.history[-1]["User_Reflection"] = selected_preset
+                    bot_reply = generate_companion_reply(selected_preset, dom_emotion)
                     st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
                     if dom_emotion in ["happy", "surprise"]:
                         st.balloons()
                     st.rerun()
 
-        st.markdown('</div>', unsafe_allow_html=True)
+                # Custom Text Input & Send
+                chat_col_input, chat_col_btn = st.columns([3.8, 1.2])
+                with chat_col_input:
+                    user_chat_text = st.text_input(
+                        "Message Companion",
+                        placeholder="Or type your own reason...",
+                        label_visibility="collapsed",
+                        key=f"user_dialogue_input_{i}",
+                    )
+                with chat_col_btn:
+                    if st.button("Send 🫧", key=f"send_chat_btn_{i}"):
+                        if user_chat_text.strip():
+                            st.session_state.chat_messages.append({"role": "user", "content": user_chat_text.strip()})
+                            if len(st.session_state.history) > 0:
+                                st.session_state.history[-1]["User_Reflection"] = user_chat_text.strip()
+                            bot_reply = generate_companion_reply(user_chat_text.strip(), dom_emotion)
+                            st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
+                            if dom_emotion in ["happy", "surprise"]:
+                                st.balloons()
+                            st.rerun()
+
+                st.markdown('</div>', unsafe_allow_html=True)
+
+                st.markdown('<div class="clean-panel">', unsafe_allow_html=True)
+                render_live_animated_bars(res["emotion"], dom_emotion, is_dark)
+                st.markdown("</div>", unsafe_allow_html=True)
 
 # =============================================================================
 # SESSION HISTORY
