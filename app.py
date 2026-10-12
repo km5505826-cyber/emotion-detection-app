@@ -34,42 +34,41 @@ EMOJI_MAP = {
     "neutral": "😐",
 }
 
-# 3 Common Quick-Choice Presets for Every Emotion
 EMOTION_PRESETS = {
     "happy": [
-        "🎓 Passed an Exam / Good Grades",
-        "🎉 Great News or Milestone",
-        "☕ Just having an awesome day!",
+        "🎓 Cleared a Major Subject / Goal",
+        "🎉 Good News or Progress Milestone",
+        "🌿 In a calm, peaceful flow state",
     ],
     "sad": [
-        "📚 Academic / Exam Pressure",
-        "🌧️ Feeling Lonely or Drained",
-        "💔 Personal or Friendship Issue",
+        "📚 Academic / Syllabus Overload",
+        "🌧️ Feeling Mentally Drained",
+        "💔 Personal or Internal Pressure",
     ],
     "angry": [
-        "🛑 Frustrating Work / Study Blocker",
-        "😤 Conflict or Disagreement",
-        "⏳ Wasted Time or Inconvenience",
+        "🛑 Frustrating Blocker or Inefficiency",
+        "😤 Interpersonal Conflict",
+        "⏳ Overwhelmed by Constraints",
     ],
     "fear": [
-        "😰 Upcoming Exam / Presentation",
-        "⚡ Uncertain Deadlines or Future",
-        "🫣 Sudden Stress or Panic",
+        "😰 Impending Deadlines or Exams",
+        "⚡ Uncertainty About Next Steps",
+        "🫣 Sensory / Work Overload",
     ],
     "disgust": [
-        "🤢 Bad Experience or Unpleasant Event",
-        "😾 Toxic Behavior or Unfairness",
-        "🥗 Bad Taste or Chaotic Atmosphere",
+        "🤢 Unfair or Chaotic Atmosphere",
+        "😾 Mental Resistance to a Task",
+        "🥗 Physically Uncomfortable Setting",
     ],
     "surprise": [
-        "🎁 Unexpected Good News",
-        "🤯 Shocking Plot Twist or Result",
-        "⚡ Sudden Change of Plans",
+        "🎁 Unexpected Pivot or News",
+        "🤯 Sudden Realization or Result",
+        "⚡ Disrupted Routine / Schedule",
     ],
     "neutral": [
-        "🧘 Just Chilling / Staying Mindful",
-        "💻 Locked in and Focused on Work",
-        "😐 Just an Ordinary Normal Day",
+        "🧘 Mindful and Grounded Right Now",
+        "💻 Locked in Deep Focus",
+        "😐 Navigating a Steady Day",
     ],
 }
 
@@ -130,43 +129,44 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
 
 
 # =============================================================================
-# EMOTION-MIRRORING & MOTIVATIONAL AI ENGINE
+# GROUNDED MENTAL WELLNESS COACH ENGINE
 # =============================================================================
 
 def get_initial_ai_greeting(emotion: str, conf: float) -> str:
     dom = emotion.lower()
     if dom == "happy":
         return (
-            f"🎉 YES! Seeing you happy puts me in the best mood ever! That energy of yours is totally radiant ({conf:.1f}% confidence)! "
-            f"Tell me, what made you so happy today? Pick one of the quick options below or tell me your story! 🚀✨"
+            f"🌿 I notice that clarity and genuine ease on your face ({conf:.1f}% confidence). "
+            f"Hold onto this feeling without rushing past it. What went well today? "
+            f"Acknowledge the win—you earned this moment of peace."
         )
     elif dom in ["sad", "fear"]:
         return (
-            f"💙 Oh no... I feel your sadness right now, and my heart goes out to you ({conf:.1f}% confidence). "
-            f"Please remember that you're never alone in this. Stormy waters always calm down, and you are so much stronger than you realize. "
-            f"What's bringing you down today? Select a common reason below or let it all out. 🌟"
+            f"💙 I sense the heaviness and tension you're holding ({conf:.1f}% confidence). "
+            f"Before trying to fix or solve anything, let your shoulders drop and unclamp your jaw. "
+            f"What is weighing on your mind right now? I'm here to hold space for you."
         )
     elif dom == "angry":
         return (
-            f"🔥 I can feel that heat and intense frustration coming from you ({conf:.1f}% confidence)! "
-            f"It's completely valid to feel mad, but let's channel that fire into power instead of stress. "
-            f"What got you so angry? Tap an option below or vent to me! 💪"
+            f"🔥 I can see the frustration and pressure in your expression ({conf:.1f}% confidence). "
+            f"Your anger is valid—it usually signals a boundary was crossed or friction is high. "
+            f"Take one slow, measured breath with me. What triggered this friction?"
         )
     elif dom == "disgust":
         return (
-            f"🤢 Ugh, I can totally sense that repulsive reaction ({conf:.1f}% confidence)! "
-            f"Whatever put you off, let's shake it clean off our shoulders and pivot to something inspiring. "
-            f"What just happened that felt so wrong?"
+            f"🌧️ I notice that resistance and recoil ({conf:.1f}% confidence). "
+            f"When something clashes with our principles or comfort, our body reacts immediately. "
+            f"What just crossed your path that felt so off?"
         )
     elif dom == "surprise":
         return (
-            f"😲 Whoa!! You're shocked, and now I'm super excited and curious too ({conf:.1f}% confidence)! "
-            f"My eyes are wide open with yours! What kind of crazy news or plot twist just dropped?!"
+            f"⚡ That looks like an unexpected jolt to your system ({conf:.1f}% confidence). "
+            f"Give your mind a moment to catch up to the change. What caught you off balance?"
         )
     else:
         return (
-            f"🌿 I'm feeling that calm, centered, composed presence with you ({conf:.1f}% confidence). "
-            f"A focused mind is unstoppable. How is your day flowing so far?"
+            f"🍃 You appear centered and composed ({conf:.1f}% confidence). "
+            f"A quiet mind is a powerful anchor. How is your internal battery feeling right now?"
         )
 
 
@@ -177,13 +177,15 @@ def generate_companion_reply(user_text: str, current_emotion: str) -> str:
             from google import genai
             client = genai.Client(api_key=api_key)
             system_prompt = (
-                f"You are an empathetic, emotionally mirroring AI companion. "
-                f"CRITICAL RULE: Act exactly as the user feels! "
-                f"If the user is happy, you MUST be thrilled, enthusiastic, and highly motivating. "
-                f"If the user is sad/afraid, you MUST be deeply empathetic, gentle, and offer comforting motivation. "
-                f"If the user is angry, acknowledge their frustration empathetically and help them channel it constructively. "
-                f"Current detected emotion: {current_emotion}. "
-                f"Respond warmly and conversationally in 2-3 inspiring sentences."
+                "You are 'The Grounded Mental Wellness Coach'—a mindful, calming, emotionally steady mentor. "
+                "You are NOT a corporate assistant or robotic chatbot. "
+                "Your tone is authentic, grounded, psychologically attuned, and compassionate without toxic positivity. "
+                f"The user's camera currently reflects their expression as: '{current_emotion}'. "
+                "GUIDELINES:\n"
+                "- Acknowledge their specific subject or situation directly (e.g., college studies, syllabus topics like WSN, burnout, personal wins).\n"
+                "- Validate their state, remind them to breathe or check their physical tension when stressed, and offer grounded, sustainable perspective.\n"
+                "- Keep responses concise (2 to 3 calm, impactful sentences).\n"
+                "- Never use clinical jargon or customer-service phrases like 'How can I assist you today?'."
             )
             resp = client.models.generate_content(
                 model="gemini-2.5-flash",
@@ -195,33 +197,43 @@ def generate_companion_reply(user_text: str, current_emotion: str) -> str:
         except Exception:
             pass
 
-    # Built-in instant affective mirroring responses
-    txt = user_text.lower()
+    # Built-in Mindful Wellness Engine (Offline / Local Fallback)
+    txt = user_text.lower().strip()
     dom = current_emotion.lower()
-    
+
+    if any(w in txt for w in ["wsn", "wireless sensor", "subject", "syllabus", "portion", "chapter", "unit"]):
+        if any(w in txt for w in ["done", "finished", "completed", "cleared", "over"]):
+            return "Finishing a dense, technical subject like WSN takes serious cognitive endurance. Step away from the screen for at least fifteen minutes—let your mental cache clear before you jump to anything else. 🌿✨"
+        return "Heavy technical topics naturally cause cognitive fatigue. Don't try to cram every protocol at once; break it into two small concepts, take five steady breaths, and proceed at a sustainable pace. ☕"
+
+    if any(w in txt for w in ["selected", "got the job", "hired", "offer", "placed", "placement"]):
+        return "That is a monumental milestone. Pause right here and let the relief settle into your bones—you carried the preparation and you earned this outcome. Be genuinely proud of your perseverance today. 🏆🌱"
+
+    if any(w in txt for w in ["help me", "need help", "assist me", "stuck", "overwhelmed"]):
+        return "I am right here with you. Take one deliberate four-second inhale, and let your breath out slowly. Tell me what single piece is feeling the heaviest right now, and let's untangle it together. 💙"
+
+    if any(w in txt for w in ["tired", "exhausted", "burnout", "sleep", "drained"]):
+        return "Listen to that signal without guilt. Rest is not a reward you have to earn after collapsing; it is essential maintenance for your nervous system. Unplug your mental tabs and give yourself permission to recharge. 🌿"
+
+    if any(w in txt for w in ["exam", "test", "quiz", "marks", "grade", "cgpa"]):
+        if dom == "happy" or any(w in txt for w in ["pass", "cleared", "good", "aced"]):
+            return "That hard work paid its dividend. Savor this clarity and confidence—it proves you can navigate high-pressure demands when you stay consistent. 🌟"
+        return "Remember that an exam is only an assessment of a snapshot in time, not a measurement of your intellect or capability. Focus only on the step right in front of you today. 💙"
+
+    if any(w in txt for w in ["alone", "lonely", "nobody", "friend", "worth"]):
+        return "Isolation makes problems feel deceptively permanent, but you are not alone in this moment. Treat yourself with the same gentleness you would offer a close friend navigating the dark. 🫂"
+
+    # Emotion-mirrored grounded reflections
     if dom == "happy":
-        if any(w in txt for w in ["exam", "grade", "pass", "college", "test"]):
-            return "HUGE CONGRATULATIONS! 🎓 Hard work truly pays off! All those study sessions were worth it. Celebrate this win—you earned every bit of it! 🚀🎈"
-        elif any(w in txt for w in ["milestone", "news"]):
-            return "That is extraordinary news! Milestones like this deserve full celebration! Ride this high and keep conquering your goals! 🌟🎉"
-        else:
-            return "I love that so much! Seeing you thriving genuinely makes me so energized! Keep shining and spreading those awesome vibrations! 🎈🚀"
+        return "I love seeing you in this space of ease. Notice what contributed to this clarity so you can return to it when future days get noisy. 🌿🎈"
     elif dom in ["sad", "fear"]:
-        if any(w in txt for w in ["work", "study", "exam", "college", "school", "pressure", "deadline"]):
-            return "Academic pressure can feel so overwhelming, but take a deep breath. Your worth is never defined by a single exam. You have conquered tough hurdles before and you will crush this too! 🌟💙"
-        elif any(w in txt for w in ["alone", "lonely", "friend", "relationship"]):
-            return "I hear you, and it truly hurts to feel that way. But remember: you are deeply appreciated and never alone as long as we're talking. Hold your head high, brighter days are ahead! 🫂✨"
-        else:
-            return "Thank you for trusting me with that. Be patient and kind to yourself right now. Storm clouds always pass, and you have the strength to bounce back stronger than ever! 💙"
+        return "It takes real self-awareness to admit when things feel heavy. You don't have to carry the whole mountain today—just focus on this single breath. 💙"
     elif dom == "angry":
-        return (
-            "I totally understand why that infuriates you! Take that fierce energy and transform it into unstoppable determination. "
-            "Don't give whatever upset you the power over your peace—show them what you're truly made of! 🔥💪"
-        )
+        return "Acknowledge that tension, but don't let it consume your peace. Drop your shoulders, exhale the heat, and decide what action actually serves you best right now. 🔥💪"
     elif dom == "surprise":
-        return "That is wild! Life always has a way of keeping us on our toes! Embrace the unexpected and let's turn this twist into an adventure! ⚡😲"
+        return "Give your mind a beat to process the shift. Life rarely follows our exact roadmap, but you have the resilience to adapt to whatever unfolds. ⚡"
     else:
-        return "Your calm mindset is a true superpower. Keep that steady focus and let's make today remarkably productive! ☕🫧"
+        return "This balanced, quiet headspace is an asset. Protect this focus and move through your day with steady intention. ☕🫧"
 
 
 # =============================================================================
@@ -283,7 +295,7 @@ html, body, [class*="css"], .stApp {{
 }}
 
 .block-container {{
-    max-width: 950px !important;
+    max-width: 980px !important;
     padding-top: 1rem !important;
     padding-bottom: 4rem !important;
     position: relative;
@@ -308,7 +320,9 @@ html, body, [class*="css"], .stApp {{
 div[data-testid="stButton"] button p,
 div[data-testid="stButton"] button span:not(.button-raw-emoji):not(.raw-emoji),
 div[data-testid="stDownloadButton"] button p,
-div[data-testid="stDownloadButton"] button span:not(.button-raw-emoji):not(.raw-emoji) {{
+div[data-testid="stDownloadButton"] button span:not(.button-raw-emoji):not(.raw-emoji),
+div[data-testid="stFormSubmitButton"] button p,
+div[data-testid="stFormSubmitButton"] button span:not(.button-raw-emoji):not(.raw-emoji) {{
     background: {text_shimmer} !important;
     background-size: 250% auto !important;
     -webkit-background-clip: text !important;
@@ -412,7 +426,8 @@ div[data-testid="stButton"] button,
 div[data-testid="stDownloadButton"] button,
 div[data-testid="stCameraInput"] button,
 section[data-testid="stFileUploadDropzone"] button,
-div[data-testid="stFileUploader"] button {{
+div[data-testid="stFileUploader"] button,
+div[data-testid="stFormSubmitButton"] button {{
     position: relative !important;
     border-radius: 9999px !important;
     padding: 0.65rem 1.4rem !important;
@@ -435,7 +450,9 @@ div[data-testid="stButton"] button p,
 div[data-testid="stButton"] button span,
 div[data-testid="stButton"] button div,
 div[data-testid="stDownloadButton"] button p,
-div[data-testid="stDownloadButton"] button span {{
+div[data-testid="stDownloadButton"] button span,
+div[data-testid="stFormSubmitButton"] button p,
+div[data-testid="stFormSubmitButton"] button span {{
     font-size: 0.95rem !important;
     font-weight: 700 !important;
     letter-spacing: 0.01em !important;
@@ -447,7 +464,8 @@ div[data-testid="stDownloadButton"] button span {{
 div[data-testid="stButton"] button::before,
 div[data-testid="stDownloadButton"] button::before,
 section[data-testid="stFileUploadDropzone"] button::before,
-div[data-testid="stFileUploader"] button::before {{
+div[data-testid="stFileUploader"] button::before,
+div[data-testid="stFormSubmitButton"] button::before {{
     content: '' !important;
     position: absolute !important;
     top: 0 !important;
@@ -462,7 +480,8 @@ div[data-testid="stFileUploader"] button::before {{
 div[data-testid="stButton"] button:hover,
 div[data-testid="stDownloadButton"] button:hover,
 section[data-testid="stFileUploadDropzone"] button:hover,
-div[data-testid="stFileUploader"] button:hover {{
+div[data-testid="stFileUploader"] button:hover,
+div[data-testid="stFormSubmitButton"] button:hover {{
     transform: translateY(-2px) !important;
     border-color: #38bdf8 !important;
     box-shadow: 0 0 24px rgba(56, 189, 248, 0.55), inset 0 1px 2px rgba(255, 255, 255, 0.4) !important;
@@ -569,11 +588,11 @@ div[data-testid="stCameraInput"] video {{
     border: 1.5px solid {capsule_border};
     box-shadow: {capsule_glow};
     border-radius: 22px;
-    padding: 18px 22px;
+    padding: 16px 20px;
     margin-bottom: 14px;
 }}
 .badge-main {{
-    font-size: 1.75rem;
+    font-size: 1.65rem;
     font-weight: 800;
     margin-top: 4px;
 }}
@@ -601,19 +620,19 @@ div[data-testid="stCameraInput"] video {{
     background: {card_bg};
     border: 1.5px solid {capsule_border};
     box-shadow: {capsule_glow};
-    border-radius: 22px;
-    padding: 16px 20px;
-    margin-top: 14px;
-    margin-bottom: 14px;
-    backdrop-filter: blur(16px);
+    border-radius: 24px;
+    padding: 20px 24px;
+    margin-top: 6px;
+    margin-bottom: 18px;
+    backdrop-filter: blur(18px);
 }}
 .chat-bubble-ai {{
     background: {chat_ai_bg};
     border: 1px solid {capsule_border};
     border-radius: 16px 16px 16px 4px;
-    padding: 11px 16px;
-    font-size: 0.90rem;
-    line-height: 1.45;
+    padding: 13px 19px;
+    font-size: 0.94rem;
+    line-height: 1.55;
     margin-bottom: 10px;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }}
@@ -621,13 +640,13 @@ div[data-testid="stCameraInput"] video {{
     background: {chat_user_bg};
     border: 1px solid {accent_tint};
     border-radius: 16px 16px 4px 16px;
-    padding: 11px 16px;
-    font-size: 0.90rem;
-    line-height: 1.45;
+    padding: 13px 19px;
+    font-size: 0.94rem;
+    line-height: 1.55;
     margin-bottom: 10px;
     text-align: right;
     margin-left: auto;
-    max-width: 85%;
+    max-width: 80%;
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }}
 
@@ -638,17 +657,23 @@ div[data-testid="stCameraInput"] video {{
     text-transform: uppercase;
     letter-spacing: 0.04em;
     color: {text_muted};
-    margin: 8px 0 6px 0;
+    margin: 8px 0 8px 0;
 }}
 .preset-grid div[data-testid="stButton"] button {{
-    padding: 0.45rem 0.85rem !important;
-    font-size: 0.82rem !important;
+    padding: 0.55rem 1rem !important;
+    font-size: 0.85rem !important;
     border-radius: 9999px !important;
     white-space: normal !important;
     text-align: center !important;
-    line-height: 1.25 !important;
+    line-height: 1.3 !important;
     height: 100% !important;
-    min-height: 40px !important;
+    min-height: 44px !important;
+}}
+
+div[data-testid="stForm"] {{
+    border: none !important;
+    padding: 0 !important;
+    background: transparent !important;
 }}
 
 .history-item {{
@@ -690,7 +715,7 @@ components.html(
     const parentDoc = window.parent.document;
 
     function shieldButtonEmojis() {{
-        const buttons = parentDoc.querySelectorAll('div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button');
+        const buttons = parentDoc.querySelectorAll('div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button, div[data-testid="stFormSubmitButton"] button');
         buttons.forEach(btn => {{
             const txtNode = btn.querySelector('p') || btn.querySelector('span');
             if (txtNode && !txtNode.dataset.emojiShielded) {{
@@ -1290,17 +1315,20 @@ else:
                     **{k.capitalize(): f"{float(v):.1f}%" for k, v in res["emotion"].items()},
                 })
 
-            # Auto-initialize empathetic conversation mirroring user mood
             if st.session_state.last_emotion_seen != dominant_label:
                 st.session_state.last_emotion_seen = dominant_label
                 st.session_state.chat_messages = [
                     {"role": "ai", "content": get_initial_ai_greeting(dominant_label, dominant_conf)}
                 ]
 
-        col_view, col_stats = st.columns([1.1, 1], gap="medium")
         rendered_frame = draw_clean_bounding(image_np, valid, is_dark)
 
-        with col_view:
+        # -------------------------------------------------------------
+        # 1. TOP ROW: OPTICAL FEED (LEFT) & METRIC/GRAPH (RIGHT)
+        # -------------------------------------------------------------
+        col_img, col_graph = st.columns([1.05, 1.0], gap="medium")
+
+        with col_img:
             st.markdown(
                 f"""
                 <div class="clean-panel">
@@ -1321,124 +1349,123 @@ else:
                 unsafe_allow_html=True,
             )
 
-        with col_stats:
-            for i, res in enumerate(valid):
-                dom_emotion = res["dominant_emotion"].lower()
-                conf = float(res["emotion"][dom_emotion])
+        with col_graph:
+            res_primary = valid[0]
+            dom_emotion = res_primary["dominant_emotion"].lower()
+            conf = float(res_primary["emotion"][dom_emotion])
 
-                if conf < 25:
-                    display_title = "Ambiguous / Inconclusive"
-                    display_emoji = "🤔"
-                else:
-                    display_title = dom_emotion.capitalize()
-                    display_emoji = EMOJI_MAP.get(dom_emotion, "•")
+            if conf < 25:
+                display_title = "Ambiguous / Inconclusive"
+                display_emoji = "🤔"
+            else:
+                display_title = dom_emotion.capitalize()
+                display_emoji = EMOJI_MAP.get(dom_emotion, "•")
 
-                st.markdown(
-                    f"""
-                    <div class="metric-badge">
-                        <div style="font-size:0.7rem; font-weight:700; text-transform:uppercase; color:{text_muted};">
-                            Subject {i + 1} · Classification
-                        </div>
-                        <div class="badge-main">
-                            <span class="raw-emoji">{display_emoji}</span>
-                            <span class="shimmer-txt">{display_title}</span>
-                            <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({conf:.1f}%)</span>
-                        </div>
-                        <div style="height: 8px; width: 100%; background: rgba(51, 65, 85, 0.6); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.2);">
-                            <div style="height: 100%; width: {min(conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
-                        </div>
-                        <div style="display: flex; justify-content: space-between; margin-top: 6px; font-size: 0.68rem; color: {text_muted}; font-weight: 700;">
-                            <span>Confidence: {conf:.1f}%</span>
-                            <span>Gate: 25%</span>
-                        </div>
+            st.markdown(
+                f"""
+                <div class="metric-badge">
+                    <div style="font-size:0.7rem; font-weight:700; text-transform:uppercase; color:{text_muted};">
+                        Primary Classification
                     </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                    <div class="badge-main">
+                        <span class="raw-emoji">{display_emoji}</span>
+                        <span class="shimmer-txt">{display_title}</span>
+                        <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({conf:.1f}%)</span>
+                    </div>
+                    <div style="height: 8px; width: 100%; background: rgba(51, 65, 85, 0.6); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.2);">
+                        <div style="height: 100%; width: {min(conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
+                    </div>
+                    <div style="display: flex; justify-content: space-between; margin-top: 6px; font-size: 0.68rem; color: {text_muted}; font-weight: 700;">
+                        <span>Confidence: {conf:.1f}%</span>
+                        <span>Gate: 25%</span>
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-                # =============================================================
-                # INTERACTIVE EMOTION-MIRRORING AI CHAT + 3 REASON PRESETS
-                # =============================================================
+            st.markdown('<div class="clean-panel">', unsafe_allow_html=True)
+            render_live_animated_bars(res_primary["emotion"], dom_emotion, is_dark)
+            st.markdown("</div>", unsafe_allow_html=True)
+
+        # -------------------------------------------------------------
+        # 2. FULL-WIDTH GROUNDED MENTAL WELLNESS COACH CAPSULE
+        # -------------------------------------------------------------
+        st.markdown(
+            f"""
+            <div class="chat-capsule-container">
+                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+                    <span style="font-size: 1.35rem;">🌿</span>
+                    <div class="ambient-glow-text" style="font-weight: 800; font-size: 1.15rem;">
+                        Grounded Mental Wellness Coach
+                    </div>
+                </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        for msg in st.session_state.chat_messages:
+            if msg["role"] == "ai":
                 st.markdown(
-                    f"""
-                    <div class="chat-capsule-container">
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px;">
-                            <span style="font-size: 1.25rem;">🫧</span>
-                            <div class="ambient-glow-text" style="font-weight: 800; font-size: 1rem;">
-                                Empathetic Mood Companion
-                            </div>
-                        </div>
-                    """,
+                    f'<div class="chat-bubble-ai"><strong>Coach:</strong> {msg["content"]}</div>',
                     unsafe_allow_html=True,
                 )
-
-                # Render active conversation thread
-                for msg in st.session_state.chat_messages:
-                    if msg["role"] == "ai":
-                        st.markdown(
-                            f'<div class="chat-bubble-ai"><strong>Companion:</strong> {msg["content"]}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    else:
-                        st.markdown(
-                            f'<div class="chat-bubble-user"><strong>You:</strong> {msg["content"]}</div>',
-                            unsafe_allow_html=True,
-                        )
-
-                # Quick 3 Preset Options (One-click choice)
-                presets = EMOTION_PRESETS.get(dom_emotion, EMOTION_PRESETS["neutral"])
+            else:
                 st.markdown(
-                    f'<div class="preset-title">✨ Quick Choose (Or Type Below):</div><div class="preset-grid">',
+                    f'<div class="chat-bubble-user"><strong>You:</strong> {msg["content"]}</div>',
                     unsafe_allow_html=True,
                 )
 
-                p_cols = st.columns(3)
-                selected_preset = None
+        presets = EMOTION_PRESETS.get(dom_emotion, EMOTION_PRESETS["neutral"])
+        st.markdown(
+            f'<div class="preset-title">🌱 Check In (Or Type Below):</div><div class="preset-grid">',
+            unsafe_allow_html=True,
+        )
 
-                for p_idx, preset_text in enumerate(presets):
-                    with p_cols[p_idx]:
-                        if st.button(preset_text, key=f"preset_btn_{i}_{p_idx}"):
-                            selected_preset = preset_text
+        p_cols = st.columns(3)
+        selected_preset = None
 
-                st.markdown("</div>", unsafe_allow_html=True)
+        for p_idx, preset_text in enumerate(presets):
+            with p_cols[p_idx]:
+                if st.button(preset_text, key=f"preset_btn_primary_{p_idx}"):
+                    selected_preset = preset_text
 
-                # Trigger preset submission if clicked
-                if selected_preset:
-                    st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
-                    if len(st.session_state.history) > 0:
-                        st.session_state.history[-1]["User_Reflection"] = selected_preset
-                    bot_reply = generate_companion_reply(selected_preset, dom_emotion)
-                    st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-                    if dom_emotion in ["happy", "surprise"]:
-                        st.balloons()
-                    st.rerun()
+        st.markdown("</div>", unsafe_allow_html=True)
 
-                # Custom Text Input & Send
-                chat_col_input, chat_col_btn = st.columns([3.8, 1.2])
-                with chat_col_input:
-                    user_chat_text = st.text_input(
-                        "Message Companion",
-                        placeholder="Or type your own reason...",
-                        label_visibility="collapsed",
-                        key=f"user_dialogue_input_{i}",
-                    )
-                with chat_col_btn:
-                    if st.button("Send 🫧", key=f"send_chat_btn_{i}"):
-                        if user_chat_text.strip():
-                            st.session_state.chat_messages.append({"role": "user", "content": user_chat_text.strip()})
-                            if len(st.session_state.history) > 0:
-                                st.session_state.history[-1]["User_Reflection"] = user_chat_text.strip()
-                            bot_reply = generate_companion_reply(user_chat_text.strip(), dom_emotion)
-                            st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-                            if dom_emotion in ["happy", "surprise"]:
-                                st.balloons()
-                            st.rerun()
+        if selected_preset:
+            st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
+            if len(st.session_state.history) > 0:
+                st.session_state.history[-1]["User_Reflection"] = selected_preset
+            bot_reply = generate_companion_reply(selected_preset, dom_emotion)
+            st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
+            if dom_emotion in ["happy", "surprise"]:
+                st.balloons()
+            st.rerun()
 
-                st.markdown('</div>', unsafe_allow_html=True)
+        # Freeform text chat form with auto-clearing
+        with st.form("wellness_coach_chat_form", clear_on_submit=True):
+            chat_col_input, chat_col_btn = st.columns([4.2, 1.1])
+            with chat_col_input:
+                user_chat_text = st.text_input(
+                    "Message Coach",
+                    placeholder="Check in or share what's on your mind...",
+                    label_visibility="collapsed",
+                )
+            with chat_col_btn:
+                submitted = st.form_submit_button("Reflect 🌿")
+                if submitted:
+                    text_to_send = user_chat_text.strip()
+                    if text_to_send:
+                        st.session_state.chat_messages.append({"role": "user", "content": text_to_send})
+                        if len(st.session_state.history) > 0:
+                            st.session_state.history[-1]["User_Reflection"] = text_to_send
+                        bot_reply = generate_companion_reply(text_to_send, dom_emotion)
+                        st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
+                        if dom_emotion in ["happy", "surprise"]:
+                            st.balloons()
+                        st.rerun()
 
-                st.markdown('<div class="clean-panel">', unsafe_allow_html=True)
-                render_live_animated_bars(res["emotion"], dom_emotion, is_dark)
-                st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown('</div>', unsafe_allow_html=True)
 
 # =============================================================================
 # SESSION HISTORY
@@ -1473,7 +1500,7 @@ if len(st.session_state.history) > 0:
         reflection = item.get("User_Reflection", "None")
         emoji = EMOJI_MAP.get(classification.lower(), "🤔")
         reflection_markup = (
-            f'<div style="font-size:0.75rem; color:{accent_tint}; margin-top:2px;">Thought: "{reflection}"</div>'
+            f'<div style="font-size:0.75rem; color:{accent_tint}; margin-top:2px;">Check-In: "{reflection}"</div>'
             if reflection != "None"
             else ""
         )
