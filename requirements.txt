@@ -1,7 +1,9 @@
 streamlit
-deepface==0.0.79
-opencv-python-headless==4.8.0.74
-Pillow
+deepface==0.0.93
+tensorflow-cpu==2.15.0
+tf-keras==2.15.0
+opencv-python-headless==4.8.1.78
+pillow
 numpy<2.0.0
 pandas
 matplotlib
