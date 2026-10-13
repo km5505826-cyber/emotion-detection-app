@@ -1,6 +1,7 @@
 import time
 import json
 import os
+import hashlib
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
@@ -72,6 +73,7 @@ EMOTION_PRESETS = {
     ],
 }
 
+# Session state initialization
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -89,6 +91,14 @@ if "chat_messages" not in st.session_state:
 
 if "last_emotion_seen" not in st.session_state:
     st.session_state.last_emotion_seen = None
+
+if "trigger_celebration" not in st.session_state:
+    st.session_state.trigger_celebration = False
+
+# Render celebration if flagged from previous rerun
+if st.session_state.trigger_celebration:
+    st.balloons()
+    st.session_state.trigger_celebration = False
 
 
 @st.cache_resource(show_spinner=False)
@@ -111,21 +121,25 @@ preload_emotion_model()
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
-    nparr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
-    
-    t0 = time.time()
-    results = DeepFace.analyze(
-        img_path=nparr,
-        actions=["emotion"],
-        detector_backend="opencv",
-        enforce_detection=False,
-        silent=True,
-    )
-    latency_ms = (time.time() - t0) * 1000
-    if isinstance(results, dict):
-        results = [results]
+    # DeepFace expects BGR format from OpenCV
+    rgb_arr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
+    bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
 
-    return results, latency_ms
+    t0 = time.time()
+    try:
+        results = DeepFace.analyze(
+            img_path=bgr_arr,
+            actions=["emotion"],
+            detector_backend="opencv",
+            enforce_detection=False,
+            silent=True,
+        )
+        latency_ms = (time.time() - t0) * 1000
+        if isinstance(results, dict):
+            results = [results]
+        return results, latency_ms
+    except Exception:
+        return [], 0.0
 
 
 # =============================================================================
@@ -172,27 +186,43 @@ def get_initial_ai_greeting(emotion: str, conf: float) -> str:
 
 def generate_companion_reply(user_text: str, current_emotion: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY")
+    system_prompt = (
+        "You are 'The Grounded Mental Wellness Coach'—a mindful, calming, emotionally steady mentor. "
+        "You are NOT a corporate assistant or robotic chatbot. "
+        "Your tone is authentic, grounded, psychologically attuned, and compassionate without toxic positivity. "
+        f"The user's camera currently reflects their expression as: '{current_emotion}'. "
+        "GUIDELINES:\n"
+        "- Acknowledge their specific subject or situation directly (e.g., college studies, syllabus topics like WSN, burnout, personal wins).\n"
+        "- Validate their state, remind them to breathe or check their physical tension when stressed, and offer grounded, sustainable perspective.\n"
+        "- Keep responses concise (2 to 3 calm, impactful sentences).\n"
+        "- Never use clinical jargon or customer-service phrases like 'How can I assist you today?'."
+    )
+
     if api_key:
+        # 1. Try google-genai SDK
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
-            system_prompt = (
-                "You are 'The Grounded Mental Wellness Coach'—a mindful, calming, emotionally steady mentor. "
-                "You are NOT a corporate assistant or robotic chatbot. "
-                "Your tone is authentic, grounded, psychologically attuned, and compassionate without toxic positivity. "
-                f"The user's camera currently reflects their expression as: '{current_emotion}'. "
-                "GUIDELINES:\n"
-                "- Acknowledge their specific subject or situation directly (e.g., college studies, syllabus topics like WSN, burnout, personal wins).\n"
-                "- Validate their state, remind them to breathe or check their physical tension when stressed, and offer grounded, sustainable perspective.\n"
-                "- Keep responses concise (2 to 3 calm, impactful sentences).\n"
-                "- Never use clinical jargon or customer-service phrases like 'How can I assist you today?'."
-            )
             resp = client.models.generate_content(
                 model="gemini-2.5-flash",
                 contents=user_text,
                 config={"system_instruction": system_prompt},
             )
-            if resp.text:
+            if resp and resp.text:
+                return resp.text.strip()
+        except Exception:
+            pass
+
+        # 2. Fallback to google-generativeai SDK
+        try:
+            import google.generativeai as legacy_genai
+            legacy_genai.configure(api_key=api_key)
+            model = legacy_genai.GenerativeModel(
+                model_name="gemini-1.5-flash",
+                system_instruction=system_prompt,
+            )
+            resp = model.generate_content(user_text)
+            if resp and resp.text:
                 return resp.text.strip()
         except Exception:
             pass
@@ -712,9 +742,15 @@ div[data-testid="stForm"] {{
 components.html(
     f"""
     <script>
-    const parentDoc = window.parent.document;
+    let parentDoc;
+    try {{
+        parentDoc = window.parent.document;
+    }} catch (e) {{
+        parentDoc = document;
+    }}
 
     function shieldButtonEmojis() {{
+        if (!parentDoc) return;
         const buttons = parentDoc.querySelectorAll('div[data-testid="stButton"] button, div[data-testid="stDownloadButton"] button, div[data-testid="stFormSubmitButton"] button');
         buttons.forEach(btn => {{
             const txtNode = btn.querySelector('p') || btn.querySelector('span');
@@ -742,6 +778,7 @@ components.html(
     }}
 
     function sanitizeUploaderColors() {{
+        if (!parentDoc) return;
         const uploader = parentDoc.querySelector('div[data-testid="stFileUploader"]');
         if (!uploader) return;
 
@@ -783,140 +820,142 @@ components.html(
     window._shieldInterval = setInterval(() => {{
         shieldButtonEmojis();
         sanitizeUploaderColors();
-    }}, 100);
+    }}, 120);
 
-    const oldWake = parentDoc.getElementById('water-swimming-halo');
-    if (oldWake) oldWake.remove();
+    if (parentDoc) {{
+        const oldWake = parentDoc.getElementById('water-swimming-halo');
+        if (oldWake) oldWake.remove();
 
-    const halo = parentDoc.createElement('div');
-    halo.id = 'water-swimming-halo';
-    halo.style.position = 'fixed';
-    halo.style.top = '0px';
-    halo.style.left = '0px';
-    halo.style.width = '24px';
-    halo.style.height = '24px';
-    halo.style.borderRadius = '50%';
-    halo.style.pointerEvents = 'none';
-    halo.style.zIndex = '9999999';
-    halo.style.background = 'radial-gradient(circle at 35% 35%, rgba(125, 211, 252, 0.45), rgba(2, 132, 199, 0.15) 70%, transparent 95%)';
-    halo.style.boxShadow = '0 0 16px rgba(56, 189, 248, 0.45), inset 0 0 8px rgba(255, 255, 255, 0.4)';
-    halo.style.border = '1px solid rgba(125, 211, 252, 0.35)';
-    halo.style.opacity = '0';
-    halo.style.transition = 'opacity 0.3s ease';
-    halo.style.willChange = 'transform';
+        const halo = parentDoc.createElement('div');
+        halo.id = 'water-swimming-halo';
+        halo.style.position = 'fixed';
+        halo.style.top = '0px';
+        halo.style.left = '0px';
+        halo.style.width = '24px';
+        halo.style.height = '24px';
+        halo.style.borderRadius = '50%';
+        halo.style.pointerEvents = 'none';
+        halo.style.zIndex = '9999999';
+        halo.style.background = 'radial-gradient(circle at 35% 35%, rgba(125, 211, 252, 0.45), rgba(2, 132, 199, 0.15) 70%, transparent 95%)';
+        halo.style.boxShadow = '0 0 16px rgba(56, 189, 248, 0.45), inset 0 0 8px rgba(255, 255, 255, 0.4)';
+        halo.style.border = '1px solid rgba(125, 211, 252, 0.35)';
+        halo.style.opacity = '0';
+        halo.style.transition = 'opacity 0.3s ease';
+        halo.style.willChange = 'transform';
 
-    parentDoc.body.appendChild(halo);
+        parentDoc.body.appendChild(halo);
 
-    let mouseX = window.innerWidth / 2;
-    let mouseY = window.innerHeight / 2;
-    let swimX = mouseX;
-    let swimY = mouseY;
-    let lastX = mouseX;
-    let lastY = mouseY;
-    let lastRippleTime = 0;
+        let mouseX = window.innerWidth / 2;
+        let mouseY = window.innerHeight / 2;
+        let swimX = mouseX;
+        let swimY = mouseY;
+        let lastX = mouseX;
+        let lastY = mouseY;
+        let lastRippleTime = 0;
 
-    const onMouseMove = (e) => {{
-        halo.style.opacity = '0.85';
-        mouseX = e.clientX;
-        mouseY = e.clientY;
+        const onMouseMove = (e) => {{
+            halo.style.opacity = '0.85';
+            mouseX = e.clientX;
+            mouseY = e.clientY;
 
-        const now = Date.now();
-        const dist = Math.hypot(mouseX - lastX, mouseY - lastY);
+            const now = Date.now();
+            const dist = Math.hypot(mouseX - lastX, mouseY - lastY);
 
-        if (dist > 14 && now - lastRippleTime > 55) {{
-            lastRippleTime = now;
+            if (dist > 14 && now - lastRippleTime > 55) {{
+                lastRippleTime = now;
 
-            const ripple = parentDoc.createElement('div');
-            ripple.style.position = 'fixed';
-            ripple.style.left = (mouseX - 12) + 'px';
-            ripple.style.top = (mouseY - 12) + 'px';
-            ripple.style.width = '24px';
-            ripple.style.height = '24px';
-            ripple.style.borderRadius = '50%';
-            ripple.style.pointerEvents = 'none';
-            ripple.style.zIndex = '9999998';
-            ripple.style.border = '1.5px solid rgba(125, 211, 252, 0.6)';
-            ripple.style.background = 'radial-gradient(circle, rgba(56, 189, 248, 0.18) 0%, transparent 70%)';
-            ripple.style.transition = 'transform 0.75s cubic-bezier(0.1, 0.8, 0.3, 1), opacity 0.75s ease-out';
-            ripple.style.transform = 'scale(0.4)';
-            ripple.style.opacity = '0.9';
+                const ripple = parentDoc.createElement('div');
+                ripple.style.position = 'fixed';
+                ripple.style.left = (mouseX - 12) + 'px';
+                ripple.style.top = (mouseY - 12) + 'px';
+                ripple.style.width = '24px';
+                ripple.style.height = '24px';
+                ripple.style.borderRadius = '50%';
+                ripple.style.pointerEvents = 'none';
+                ripple.style.zIndex = '9999998';
+                ripple.style.border = '1.5px solid rgba(125, 211, 252, 0.6)';
+                ripple.style.background = 'radial-gradient(circle, rgba(56, 189, 248, 0.18) 0%, transparent 70%)';
+                ripple.style.transition = 'transform 0.75s cubic-bezier(0.1, 0.8, 0.3, 1), opacity 0.75s ease-out';
+                ripple.style.transform = 'scale(0.4)';
+                ripple.style.opacity = '0.9';
 
-            parentDoc.body.appendChild(ripple);
+                parentDoc.body.appendChild(ripple);
 
-            requestAnimationFrame(() => {{
-                ripple.style.transform = 'scale(3.2)';
-                ripple.style.opacity = '0';
-            }});
+                requestAnimationFrame(() => {{
+                    ripple.style.transform = 'scale(3.2)';
+                    ripple.style.opacity = '0';
+                }});
 
-            setTimeout(() => {{
-                if (ripple.parentNode) ripple.parentNode.removeChild(ripple);
-            }}, 800);
+                setTimeout(() => {{
+                    if (ripple.parentNode) ripple.parentNode.removeChild(ripple);
+                }}, 800);
+            }}
+
+            lastX = mouseX;
+            lastY = mouseY;
+        }};
+
+        parentDoc.removeEventListener('mousemove', window._swimMouseMove);
+        window._swimMouseMove = onMouseMove;
+        parentDoc.addEventListener('mousemove', onMouseMove);
+
+        function animateWaterWake() {{
+            const viscosity = 0.18;
+            const vx = (mouseX - swimX) * viscosity;
+            const vy = (mouseY - swimY) * viscosity;
+
+            swimX += vx;
+            swimY += vy;
+
+            const speed = Math.min(Math.hypot(vx, vy), 25);
+            const stretch = 1 + speed * 0.025;
+            const squish = 1 - speed * 0.015;
+            const angle = Math.atan2(vy, vx) * (180 / Math.PI);
+
+            halo.style.transform = `translate3d(${{swimX - 12}}px, ${{swimY - 12}}px, 0) rotate(${{angle}}deg) scale(${{stretch}}, ${{squish}})`;
+
+            requestAnimationFrame(animateWaterWake);
         }}
+        animateWaterWake();
 
-        lastX = mouseX;
-        lastY = mouseY;
-    }};
+        parentDoc.removeEventListener('click', window.spawnBubbleBurst, true);
+        window.spawnBubbleBurst = function(e) {{
+            for (let i = 0; i < 5; i++) {{
+                const bubble = parentDoc.createElement('div');
+                const size = Math.floor(Math.random() * 24) + 14;
+                const destX = (Math.random() - 0.5) * 90;
+                const destY = -(Math.random() * 95 + 45);
 
-    parentDoc.removeEventListener('mousemove', window._swimMouseMove);
-    window._swimMouseMove = onMouseMove;
-    parentDoc.addEventListener('mousemove', onMouseMove);
+                bubble.style.position = 'fixed';
+                bubble.style.left = (e.clientX - size / 2) + 'px';
+                bubble.style.top = (e.clientY - size / 2) + 'px';
+                bubble.style.width = size + 'px';
+                bubble.style.height = size + 'px';
+                bubble.style.borderRadius = '50%';
+                bubble.style.background = 'radial-gradient(circle at 30% 30%, rgba(255,255,255,0.9), rgba(56, 189, 248, 0.45) 60%, transparent 95%)';
+                bubble.style.border = '1px solid rgba(255, 255, 255, 0.7)';
+                bubble.style.boxShadow = 'inset 0 2px 4px rgba(255,255,255,0.6), 0 4px 12px rgba(56, 189, 248, 0.35)';
+                bubble.style.pointerEvents = 'none';
+                bubble.style.zIndex = '999999';
+                bubble.style.transition = 'transform 0.85s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.85s ease-out';
+                bubble.style.transform = 'translate(0, 0) scale(0.6)';
+                bubble.style.opacity = '1';
 
-    function animateWaterWake() {{
-        const viscosity = 0.18;
-        const vx = (mouseX - swimX) * viscosity;
-        const vy = (mouseY - swimY) * viscosity;
+                parentDoc.body.appendChild(bubble);
 
-        swimX += vx;
-        swimY += vy;
+                requestAnimationFrame(() => {{
+                    bubble.style.transform = `translate(${{destX}}px, ${{destY}}px) scale(1.15)`;
+                    bubble.style.opacity = '0';
+                }});
 
-        const speed = Math.min(Math.hypot(vx, vy), 25);
-        const stretch = 1 + speed * 0.025;
-        const squish = 1 - speed * 0.015;
-        const angle = Math.atan2(vy, vx) * (180 / Math.PI);
+                setTimeout(() => {{
+                    if (bubble.parentNode) bubble.parentNode.removeChild(bubble);
+                }}, 900);
+            }}
+        }};
 
-        halo.style.transform = `translate3d(${{swimX - 12}}px, ${{swimY - 12}}px, 0) rotate(${{angle}}deg) scale(${{stretch}}, ${{squish}})`;
-
-        requestAnimationFrame(animateWaterWake);
+        parentDoc.addEventListener('click', window.spawnBubbleBurst, true);
     }}
-    animateWaterWake();
-
-    parentDoc.removeEventListener('click', window.spawnBubbleBurst, true);
-    window.spawnBubbleBurst = function(e) {{
-        for (let i = 0; i < 5; i++) {{
-            const bubble = parentDoc.createElement('div');
-            const size = Math.floor(Math.random() * 24) + 14;
-            const destX = (Math.random() - 0.5) * 90;
-            const destY = -(Math.random() * 95 + 45);
-
-            bubble.style.position = 'fixed';
-            bubble.style.left = (e.clientX - size / 2) + 'px';
-            bubble.style.top = (e.clientY - size / 2) + 'px';
-            bubble.style.width = size + 'px';
-            bubble.style.height = size + 'px';
-            bubble.style.borderRadius = '50%';
-            bubble.style.background = 'radial-gradient(circle at 30% 30%, rgba(255,255,255,0.9), rgba(56, 189, 248, 0.45) 60%, transparent 95%)';
-            bubble.style.border = '1px solid rgba(255, 255, 255, 0.7)';
-            bubble.style.boxShadow = 'inset 0 2px 4px rgba(255,255,255,0.6), 0 4px 12px rgba(56, 189, 248, 0.35)';
-            bubble.style.pointerEvents = 'none';
-            bubble.style.zIndex = '999999';
-            bubble.style.transition = 'transform 0.85s cubic-bezier(0.25, 1, 0.5, 1), opacity 0.85s ease-out';
-            bubble.style.transform = 'translate(0, 0) scale(0.6)';
-            bubble.style.opacity = '1';
-
-            parentDoc.body.appendChild(bubble);
-
-            requestAnimationFrame(() => {{
-                bubble.style.transform = `translate(${{destX}}px, ${{destY}}px) scale(1.15)`;
-                bubble.style.opacity = '0';
-            }});
-
-            setTimeout(() => {{
-                if (bubble.parentNode) bubble.parentNode.removeChild(bubble);
-            }}, 900);
-        }}
-    }};
-
-    parentDoc.addEventListener('click', window.spawnBubbleBurst, true);
     </script>
     """,
     height=0,
@@ -1283,24 +1322,28 @@ else:
         image_np = cv2.flip(image_np, 1)
 
     H, W = image_np.shape[:2]
-
     image_bytes = image_np.tobytes()
     results, latency = run_deepface_inference(image_bytes, W, H)
 
-    valid = [
-        r for r in results
-        if 50 < r["region"]["w"] < W * 0.95 and 50 < r["region"]["h"] < H * 0.95
-    ]
+    # Filter out fallback full-image boxes returned when OpenCV backend finds no face
+    valid = []
+    for r in results:
+        reg = r.get("region", {})
+        rx, ry, rw, rh = int(reg.get("x", 0)), int(reg.get("y", 0)), int(reg.get("w", 0)), int(reg.get("h", 0))
+        is_fallback = (rx == 0 and ry == 0 and rw >= W * 0.98 and rh >= H * 0.98)
+        if not is_fallback and rw >= 40 and rh >= 40:
+            valid.append(r)
 
     if not valid:
         st.warning("No face clearly recognized. Center your face in good lighting and retake.")
     else:
-        current_img_id = (W, H, len(valid), valid[0]["dominant_emotion"])
+        # Use image hash to uniquely identify new inputs while keeping chat stable on reruns
+        img_hash = hashlib.md5(image_bytes).hexdigest()
         dominant_label = valid[0]["dominant_emotion"].lower()
         dominant_conf = float(valid[0]["emotion"][dominant_label])
 
-        if st.session_state.cached_analysis != current_img_id:
-            st.session_state.cached_analysis = current_img_id
+        if st.session_state.cached_analysis != img_hash:
+            st.session_state.cached_analysis = img_hash
             for res in valid:
                 dom_emotion = res["dominant_emotion"].lower()
                 conf = float(res["emotion"][dom_emotion])
@@ -1418,7 +1461,7 @@ else:
 
         presets = EMOTION_PRESETS.get(dom_emotion, EMOTION_PRESETS["neutral"])
         st.markdown(
-            f'<div class="preset-title">🌱 Check In (Or Type Below):</div><div class="preset-grid">',
+            f'<div class="preset-title">🌱 Check In (Or Type Below):</div>',
             unsafe_allow_html=True,
         )
 
@@ -1430,8 +1473,6 @@ else:
                 if st.button(preset_text, key=f"preset_btn_primary_{p_idx}"):
                     selected_preset = preset_text
 
-        st.markdown("</div>", unsafe_allow_html=True)
-
         if selected_preset:
             st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
             if len(st.session_state.history) > 0:
@@ -1439,7 +1480,7 @@ else:
             bot_reply = generate_companion_reply(selected_preset, dom_emotion)
             st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
             if dom_emotion in ["happy", "surprise"]:
-                st.balloons()
+                st.session_state.trigger_celebration = True
             st.rerun()
 
         # Freeform text chat form with auto-clearing
@@ -1462,7 +1503,7 @@ else:
                         bot_reply = generate_companion_reply(text_to_send, dom_emotion)
                         st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
                         if dom_emotion in ["happy", "surprise"]:
-                            st.balloons()
+                            st.session_state.trigger_celebration = True
                         st.rerun()
 
         st.markdown('</div>', unsafe_allow_html=True)
