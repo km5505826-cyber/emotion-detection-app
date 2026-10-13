@@ -130,9 +130,10 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
         latency_ms = (time.time() - t0) * 1000
         if isinstance(results, dict):
             results = [results]
-        return results, latency_ms
-    except Exception:
-        return [], 0.0
+        return results, latency_ms, None
+    except Exception as e:
+        latency_ms = (time.time() - t0) * 1000
+        return [], latency_ms, str(e)
 
 
 # =============================================================================
@@ -723,7 +724,7 @@ div[data-testid="stForm"] {{
 )
 
 # =============================================================================
-# JAVASCRIPT: PRECISE EMOJI DECOUPLER & WATER-WAKE CURSOR
+# JAVASCRIPT: EMOJI SHIELD & WATER WAKE
 # =============================================================================
 
 components.html(
@@ -1310,38 +1311,38 @@ else:
 
     H, W = image_np.shape[:2]
     image_bytes = image_np.tobytes()
-    results, latency = run_deepface_inference(image_bytes, W, H)
+    results, latency, err_msg = run_deepface_inference(image_bytes, W, H)
 
-    valid = []
-    for r in results:
-        reg = r.get("region", {})
-        rx, ry, rw, rh = int(reg.get("x", 0)), int(reg.get("y", 0)), int(reg.get("w", 0)), int(reg.get("h", 0))
-        is_fallback = (rx == 0 and ry == 0 and rw >= W * 0.98 and rh >= H * 0.98)
-        if not is_fallback and rw >= 40 and rh >= 40:
-            valid.append(r)
-
-    if not valid:
+    if err_msg:
+        st.error(f"Inference Engine Alert: {err_msg}")
+    elif not results:
         st.warning("No face clearly recognized. Center your face in good lighting and retake.")
     else:
-        img_hash = hashlib.md5(image_bytes).hexdigest()
-        dominant_label = valid[0]["dominant_emotion"].lower()
-        dominant_conf = float(valid[0]["emotion"][dominant_label])
+        # Check if tight bounding box was identified
+        boxes = []
+        for r in results:
+            reg = r.get("region", {})
+            rx, ry, rw, rh = int(reg.get("x", 0)), int(reg.get("y", 0)), int(reg.get("w", 0)), int(reg.get("h", 0))
+            is_fallback = (rx == 0 and ry == 0 and rw >= W * 0.95 and rh >= H * 0.95)
+            if not is_fallback and rw >= 30 and rh >= 30:
+                boxes.append(r)
 
+        # Primary emotion classification target: use detected face if present, else use full portrait analysis
+        res_primary = boxes[0] if boxes else results[0]
+        dominant_label = res_primary["dominant_emotion"].lower()
+        dominant_conf = float(res_primary["emotion"][dominant_label])
+
+        img_hash = hashlib.md5(image_bytes).hexdigest()
         if st.session_state.cached_analysis != img_hash:
             st.session_state.cached_analysis = img_hash
-            for res in valid:
-                dom_emotion = res["dominant_emotion"].lower()
-                conf = float(res["emotion"][dom_emotion])
-                display_title = (
-                    "Ambiguous / Inconclusive" if conf < 25 else dom_emotion.capitalize()
-                )
-                st.session_state.history.append({
-                    "Timestamp": time.strftime("%H:%M:%S"),
-                    "Classification": display_title,
-                    "Confidence": f"{conf:.1f}%",
-                    "User_Reflection": "None",
-                    **{k.capitalize(): f"{float(v):.1f}%" for k, v in res["emotion"].items()},
-                })
+            display_title = "Ambiguous / Inconclusive" if dominant_conf < 20 else dominant_label.capitalize()
+            st.session_state.history.append({
+                "Timestamp": time.strftime("%H:%M:%S"),
+                "Classification": display_title,
+                "Confidence": f"{dominant_conf:.1f}%",
+                "User_Reflection": "None",
+                **{k.capitalize(): f"{float(v):.1f}%" for k, v in res_primary["emotion"].items()},
+            })
 
             if st.session_state.last_emotion_seen != dominant_label:
                 st.session_state.last_emotion_seen = dominant_label
@@ -1349,7 +1350,7 @@ else:
                     {"role": "ai", "content": get_initial_ai_greeting(dominant_label, dominant_conf)}
                 ]
 
-        rendered_frame = draw_clean_bounding(image_np, valid, is_dark)
+        rendered_frame = draw_clean_bounding(image_np, boxes, is_dark) if boxes else image_np
 
         # -------------------------------------------------------------
         # 1. OPTICAL FEED & GRAPH
@@ -1365,10 +1366,11 @@ else:
                 unsafe_allow_html=True,
             )
             st.image(rendered_frame, use_container_width=True)
+            num_faces_label = str(len(boxes)) if boxes else "1 (Portrait)"
             st.markdown(
                 f"""
                     <div class="stat-row">
-                        <div class="stat-item"><div class="stat-label">Faces</div><div class="stat-value">{len(valid)}</div></div>
+                        <div class="stat-item"><div class="stat-label">Faces</div><div class="stat-value">{num_faces_label}</div></div>
                         <div class="stat-item"><div class="stat-label">Latency</div><div class="stat-value">{latency:.0f} ms</div></div>
                         <div class="stat-item"><div class="stat-label">Resolution</div><div class="stat-value">{W}x{H}</div></div>
                     </div>
@@ -1378,16 +1380,12 @@ else:
             )
 
         with col_graph:
-            res_primary = valid[0]
-            dom_emotion = res_primary["dominant_emotion"].lower()
-            conf = float(res_primary["emotion"][dom_emotion])
-
-            if conf < 25:
+            if dominant_conf < 20:
                 display_title = "Ambiguous / Inconclusive"
                 display_emoji = "🤔"
             else:
-                display_title = dom_emotion.capitalize()
-                display_emoji = EMOJI_MAP.get(dom_emotion, "•")
+                display_title = dominant_label.capitalize()
+                display_emoji = EMOJI_MAP.get(dominant_label, "•")
 
             st.markdown(
                 f"""
@@ -1398,14 +1396,14 @@ else:
                     <div class="badge-main">
                         <span class="raw-emoji">{display_emoji}</span>
                         <span class="shimmer-txt">{display_title}</span>
-                        <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({conf:.1f}%)</span>
+                        <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({dominant_conf:.1f}%)</span>
                     </div>
                     <div style="height: 8px; width: 100%; background: rgba(51, 65, 85, 0.6); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.2);">
-                        <div style="height: 100%; width: {min(conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
+                        <div style="height: 100%; width: {min(dominant_conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
                     </div>
                     <div style="display: flex; justify-content: space-between; margin-top: 6px; font-size: 0.68rem; color: {text_muted}; font-weight: 700;">
-                        <span>Confidence: {conf:.1f}%</span>
-                        <span>Gate: 25%</span>
+                        <span>Confidence: {dominant_conf:.1f}%</span>
+                        <span>Gate: 20%</span>
                     </div>
                 </div>
                 """,
@@ -1413,7 +1411,7 @@ else:
             )
 
             st.markdown('<div class="clean-panel">', unsafe_allow_html=True)
-            render_live_animated_bars(res_primary["emotion"], dom_emotion, is_dark)
+            render_live_animated_bars(res_primary["emotion"], dominant_label, is_dark)
             st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------------------------------------
@@ -1444,7 +1442,7 @@ else:
                     unsafe_allow_html=True,
                 )
 
-        presets = EMOTION_PRESETS.get(dom_emotion, EMOTION_PRESETS["neutral"])
+        presets = EMOTION_PRESETS.get(dominant_label, EMOTION_PRESETS["neutral"])
         st.markdown(
             f'<div class="preset-title">🌱 Check In (Or Type Below):</div>',
             unsafe_allow_html=True,
@@ -1462,9 +1460,9 @@ else:
             st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
             if len(st.session_state.history) > 0:
                 st.session_state.history[-1]["User_Reflection"] = selected_preset
-            bot_reply = generate_companion_reply(selected_preset, dom_emotion)
+            bot_reply = generate_companion_reply(selected_preset, dominant_label)
             st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-            if dom_emotion in ["happy", "surprise"]:
+            if dominant_label in ["happy", "surprise"]:
                 st.session_state.trigger_celebration = True
             st.rerun()
 
@@ -1484,9 +1482,9 @@ else:
                         st.session_state.chat_messages.append({"role": "user", "content": text_to_send})
                         if len(st.session_state.history) > 0:
                             st.session_state.history[-1]["User_Reflection"] = text_to_send
-                        bot_reply = generate_companion_reply(text_to_send, dom_emotion)
+                        bot_reply = generate_companion_reply(text_to_send, dominant_label)
                         st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-                        if dom_emotion in ["happy", "surprise"]:
+                        if dominant_label in ["happy", "surprise"]:
                             st.session_state.trigger_celebration = True
                         st.rerun()
 
