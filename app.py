@@ -115,7 +115,7 @@ preload_emotion_model()
 
 
 def enhance_webcam_frame(rgb_image: np.ndarray) -> np.ndarray:
-    """Equalize dynamic range, balance shadows, and sharpen edges for laptop webcams."""
+    """Equalize dynamic range, balance shadows, and sharpen edges for webcams."""
     lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
     l_channel, a_channel, b_channel = cv2.split(lab)
 
@@ -1378,22 +1378,28 @@ else:
         res_primary = boxes[0] if boxes else results[0]
 
         # -----------------------------------------------------------------
-        # CALIBRATION: Closed-Mouth Smile & Webcam Glare Offset
+        # CALIBRATION: Safe Closed-Mouth Smile & Webcam Glare Offset
         # -----------------------------------------------------------------
         calibrated_emotions = {k: float(v) for k, v in res_primary["emotion"].items()}
 
         gray_frame = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
-        smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_smile.xml")
-
         has_closed_smile = False
-        if boxes:
-            reg = boxes[0]["region"]
-            bx, by, bw, bh = int(reg["x"]), int(reg["y"]), int(reg["w"]), int(reg["h"])
-            roi_gray = gray_frame[by:by + bh, bx:bx + bw]
-            roi_lower_face = roi_gray[int(bh * 0.5):, :]
-            smiles = smile_cascade.detectMultiScale(roi_lower_face, scaleFactor=1.7, minNeighbors=20)
-            if len(smiles) > 0:
-                has_closed_smile = True
+
+        try:
+            cascade_dir = getattr(cv2.data, 'haarcascades', '') if hasattr(cv2, 'data') else ''
+            cascade_path = os.path.join(cascade_dir, 'haarcascade_smile.xml') if cascade_dir else 'haarcascade_smile.xml'
+            smile_cascade = cv2.CascadeClassifier(cascade_path)
+
+            if boxes and not smile_cascade.empty():
+                reg = boxes[0]["region"]
+                bx, by, bw, bh = int(reg["x"]), int(reg["y"]), int(reg["w"]), int(reg["h"])
+                roi_gray = gray_frame[by:by + bh, bx:bx + bw]
+                roi_lower_face = roi_gray[int(bh * 0.5):, :]
+                smiles = smile_cascade.detectMultiScale(roi_lower_face, scaleFactor=1.7, minNeighbors=20)
+                if len(smiles) > 0:
+                    has_closed_smile = True
+        except Exception:
+            has_closed_smile = False
 
         if has_closed_smile:
             calibrated_emotions["happy"] = max(calibrated_emotions.get("happy", 0.0) * 2.2, 75.0)
