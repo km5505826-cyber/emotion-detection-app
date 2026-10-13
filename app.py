@@ -21,10 +21,6 @@ st.set_page_config(
     initial_sidebar_state="collapsed",
 )
 
-# =============================================================================
-# CONSTANTS & CACHED MODEL WARM-UP
-# =============================================================================
-
 EMOJI_MAP = {
     "angry": "😠",
     "disgust": "🤢",
@@ -73,7 +69,6 @@ EMOTION_PRESETS = {
     ],
 }
 
-# Session state initialization
 if "history" not in st.session_state:
     st.session_state.history = []
 
@@ -95,7 +90,6 @@ if "last_emotion_seen" not in st.session_state:
 if "trigger_celebration" not in st.session_state:
     st.session_state.trigger_celebration = False
 
-# Render celebration if flagged from previous rerun
 if st.session_state.trigger_celebration:
     st.balloons()
     st.session_state.trigger_celebration = False
@@ -121,7 +115,6 @@ preload_emotion_model()
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
-    # DeepFace expects BGR format from OpenCV
     rgb_arr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
     bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
 
@@ -199,7 +192,6 @@ def generate_companion_reply(user_text: str, current_emotion: str) -> str:
     )
 
     if api_key:
-        # 1. Try google-genai SDK
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
@@ -213,7 +205,6 @@ def generate_companion_reply(user_text: str, current_emotion: str) -> str:
         except Exception:
             pass
 
-        # 2. Fallback to google-generativeai SDK
         try:
             import google.generativeai as legacy_genai
             legacy_genai.configure(api_key=api_key)
@@ -227,7 +218,6 @@ def generate_companion_reply(user_text: str, current_emotion: str) -> str:
         except Exception:
             pass
 
-    # Built-in Mindful Wellness Engine (Offline / Local Fallback)
     txt = user_text.lower().strip()
     dom = current_emotion.lower()
 
@@ -253,7 +243,6 @@ def generate_companion_reply(user_text: str, current_emotion: str) -> str:
     if any(w in txt for w in ["alone", "lonely", "nobody", "friend", "worth"]):
         return "Isolation makes problems feel deceptively permanent, but you are not alone in this moment. Treat yourself with the same gentleness you would offer a close friend navigating the dark. 🫂"
 
-    # Emotion-mirrored grounded reflections
     if dom == "happy":
         return "I love seeing you in this space of ease. Notice what contributed to this clarity so you can return to it when future days get noisy. 🌿🎈"
     elif dom in ["sad", "fear"]:
@@ -645,7 +634,6 @@ div[data-testid="stCameraInput"] video {{
     color: {text_muted} !important;
 }}
 
-/* ─── INTERACTIVE AI CHAT CAPSULE ─── */
 .chat-capsule-container {{
     background: {card_bg};
     border: 1.5px solid {capsule_border};
@@ -680,7 +668,6 @@ div[data-testid="stCameraInput"] video {{
     box-shadow: 0 2px 8px rgba(0,0,0,0.15);
 }}
 
-/* ─── 3 PRESET REASON PILLS ─── */
 .preset-title {{
     font-size: 0.74rem;
     font-weight: 700;
@@ -1325,7 +1312,6 @@ else:
     image_bytes = image_np.tobytes()
     results, latency = run_deepface_inference(image_bytes, W, H)
 
-    # Filter out fallback full-image boxes returned when OpenCV backend finds no face
     valid = []
     for r in results:
         reg = r.get("region", {})
@@ -1337,7 +1323,6 @@ else:
     if not valid:
         st.warning("No face clearly recognized. Center your face in good lighting and retake.")
     else:
-        # Use image hash to uniquely identify new inputs while keeping chat stable on reruns
         img_hash = hashlib.md5(image_bytes).hexdigest()
         dominant_label = valid[0]["dominant_emotion"].lower()
         dominant_conf = float(valid[0]["emotion"][dominant_label])
@@ -1367,7 +1352,7 @@ else:
         rendered_frame = draw_clean_bounding(image_np, valid, is_dark)
 
         # -------------------------------------------------------------
-        # 1. TOP ROW: OPTICAL FEED (LEFT) & METRIC/GRAPH (RIGHT)
+        # 1. OPTICAL FEED & GRAPH
         # -------------------------------------------------------------
         col_img, col_graph = st.columns([1.05, 1.0], gap="medium")
 
@@ -1432,7 +1417,7 @@ else:
             st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------------------------------------
-        # 2. FULL-WIDTH GROUNDED MENTAL WELLNESS COACH CAPSULE
+        # 2. WELLNESS COACH
         # -------------------------------------------------------------
         st.markdown(
             f"""
@@ -1483,7 +1468,6 @@ else:
                 st.session_state.trigger_celebration = True
             st.rerun()
 
-        # Freeform text chat form with auto-clearing
         with st.form("wellness_coach_chat_form", clear_on_submit=True):
             chat_col_input, chat_col_btn = st.columns([4.2, 1.1])
             with chat_col_input:
