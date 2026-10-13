@@ -102,6 +102,7 @@ def preload_emotion_model():
         DeepFace.analyze(
             img_path=dummy_frame,
             actions=["emotion"],
+            detector_backend="skip",
             enforce_detection=False,
             silent=True,
         )
@@ -119,6 +120,10 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
     bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
 
     t0 = time.time()
+    results = None
+    err = None
+
+    # 1. Try standard OpenCV face detector
     try:
         results = DeepFace.analyze(
             img_path=bgr_arr,
@@ -127,13 +132,31 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
             enforce_detection=False,
             silent=True,
         )
-        latency_ms = (time.time() - t0) * 1000
+    except Exception as e:
+        err = str(e)
+
+    # 2. Resilient fallback: directly analyze portrait if CascadeClassifier is missing
+    if results is None:
+        try:
+            results = DeepFace.analyze(
+                img_path=bgr_arr,
+                actions=["emotion"],
+                detector_backend="skip",
+                enforce_detection=False,
+                silent=True,
+            )
+            err = None
+        except Exception as e:
+            err = str(e)
+
+    latency_ms = (time.time() - t0) * 1000
+
+    if results:
         if isinstance(results, dict):
             results = [results]
         return results, latency_ms, None
-    except Exception as e:
-        latency_ms = (time.time() - t0) * 1000
-        return [], latency_ms, str(e)
+
+    return [], latency_ms, err
 
 
 # =============================================================================
@@ -1314,11 +1337,10 @@ else:
     results, latency, err_msg = run_deepface_inference(image_bytes, W, H)
 
     if err_msg:
-        st.error(f"Inference Engine Alert: {err_msg}")
+        st.error(f"Inference Alert: {err_msg}")
     elif not results:
         st.warning("No face clearly recognized. Center your face in good lighting and retake.")
     else:
-        # Check if tight bounding box was identified
         boxes = []
         for r in results:
             reg = r.get("region", {})
@@ -1327,7 +1349,6 @@ else:
             if not is_fallback and rw >= 30 and rh >= 30:
                 boxes.append(r)
 
-        # Primary emotion classification target: use detected face if present, else use full portrait analysis
         res_primary = boxes[0] if boxes else results[0]
         dominant_label = res_primary["dominant_emotion"].lower()
         dominant_conf = float(res_primary["emotion"][dominant_label])
