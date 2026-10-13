@@ -114,6 +114,22 @@ def preload_emotion_model():
 preload_emotion_model()
 
 
+def enhance_webcam_frame(rgb_image: np.ndarray) -> np.ndarray:
+    """Equalize dynamic range, balance shadows, and sharpen edges for laptop webcams."""
+    lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+
+    clahe = cv2.createCLAHE(clipLimit=2.2, tileGridSize=(8, 8))
+    cl = clahe.apply(l_channel)
+
+    limg = cv2.merge((cl, a_channel, b_channel))
+    enhanced = cv2.cvtColor(limg, cv2.COLOR_LAB2RGB)
+
+    gaussian = cv2.GaussianBlur(enhanced, (0, 0), 2.0)
+    sharpened = cv2.addWeighted(enhanced, 1.35, gaussian, -0.35, 0)
+    return sharpened
+
+
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
     rgb_arr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
@@ -122,7 +138,6 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
     results = None
     err = None
 
-    # Multi-backend cascade: SSD -> OpenCV -> Center Crop fallback
     for backend in ["ssd", "opencv"]:
         try:
             res = DeepFace.analyze(
@@ -138,7 +153,6 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
         except Exception:
             continue
 
-    # Fallback: Smart Center-Face Crop rather than squishing full-body/background
     if not results:
         try:
             cy, cx = height // 2, width // 2
@@ -1342,6 +1356,7 @@ else:
     image_np = np.array(raw_img.convert("RGB"))
     if is_camera_input:
         image_np = cv2.flip(image_np, 1)
+        image_np = enhance_webcam_frame(image_np)
 
     H, W = image_np.shape[:2]
     image_bytes = image_np.tobytes()
@@ -1361,16 +1376,37 @@ else:
                 boxes.append(r)
 
         res_primary = boxes[0] if boxes else results[0]
-        
+
         # -----------------------------------------------------------------
-        # CALIBRATION: Neutralize the famous FER-2013 Resting Sadness Bias
+        # CALIBRATION: Closed-Mouth Smile & Webcam Glare Offset
         # -----------------------------------------------------------------
         calibrated_emotions = {k: float(v) for k, v in res_primary["emotion"].items()}
-        
-        # Dampen false resting "sad" if smiling signals are present
-        if calibrated_emotions.get("happy", 0.0) > 15.0:
+
+        gray_frame = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+        smile_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_smile.xml")
+
+        has_closed_smile = False
+        if boxes:
+            reg = boxes[0]["region"]
+            bx, by, bw, bh = int(reg["x"]), int(reg["y"]), int(reg["w"]), int(reg["h"])
+            roi_gray = gray_frame[by:by + bh, bx:bx + bw]
+            roi_lower_face = roi_gray[int(bh * 0.5):, :]
+            smiles = smile_cascade.detectMultiScale(roi_lower_face, scaleFactor=1.7, minNeighbors=20)
+            if len(smiles) > 0:
+                has_closed_smile = True
+
+        if has_closed_smile:
+            calibrated_emotions["happy"] = max(calibrated_emotions.get("happy", 0.0) * 2.2, 75.0)
+            calibrated_emotions["sad"] = calibrated_emotions.get("sad", 0.0) * 0.15
+            calibrated_emotions["neutral"] = calibrated_emotions.get("neutral", 0.0) * 0.3
+        elif calibrated_emotions.get("happy", 0.0) > 8.0:
+            calibrated_emotions["happy"] = calibrated_emotions.get("happy", 0.0) * 1.8
             calibrated_emotions["sad"] = calibrated_emotions.get("sad", 0.0) * 0.25
-            
+
+        if calibrated_emotions.get("sad", 0.0) > 40.0 and calibrated_emotions.get("neutral", 0.0) > 20.0:
+            calibrated_emotions["neutral"] += calibrated_emotions["sad"] * 0.5
+            calibrated_emotions["sad"] *= 0.5
+
         dominant_label = max(calibrated_emotions, key=calibrated_emotions.get).lower()
         dominant_conf = float(calibrated_emotions[dominant_label])
 
