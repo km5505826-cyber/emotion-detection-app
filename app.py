@@ -116,47 +116,58 @@ preload_emotion_model()
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
-    # Keep as standard RGB array (DeepFace expects RGB)
     rgb_arr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
 
     t0 = time.time()
     results = None
     err = None
 
-    # 1. Try standard OpenCV face detector in RGB
-    try:
-        results = DeepFace.analyze(
-            img_path=rgb_arr,
-            actions=["emotion"],
-            detector_backend="opencv",
-            enforce_detection=False,
-            silent=True,
-        )
-    except Exception as e:
-        err = str(e)
-
-    # 2. Resilient fallback: directly analyze portrait if CascadeClassifier is missing
-    if results is None:
+    # Multi-backend cascade: SSD -> OpenCV -> Center Crop fallback
+    for backend in ["ssd", "opencv"]:
         try:
-            results = DeepFace.analyze(
+            res = DeepFace.analyze(
                 img_path=rgb_arr,
+                actions=["emotion"],
+                detector_backend=backend,
+                enforce_detection=True,
+                silent=True,
+            )
+            if res:
+                results = res if isinstance(res, list) else [res]
+                break
+        except Exception:
+            continue
+
+    # Fallback: Smart Center-Face Crop rather than squishing full-body/background
+    if not results:
+        try:
+            cy, cx = height // 2, width // 2
+            half_box = min(width, height) // 3
+            y1, y2 = max(0, cy - half_box), min(height, cy + half_box)
+            x1, x2 = max(0, cx - half_box), min(width, cx + half_box)
+            cropped_face = rgb_arr[y1:y2, x1:x2]
+
+            res = DeepFace.analyze(
+                img_path=cropped_face,
                 actions=["emotion"],
                 detector_backend="skip",
                 enforce_detection=False,
                 silent=True,
             )
-            err = None
+            if res:
+                if isinstance(res, list):
+                    res = res[0]
+                res["region"] = {"x": x1, "y": y1, "w": x2 - x1, "h": y2 - y1}
+                results = [res]
         except Exception as e:
             err = str(e)
 
     latency_ms = (time.time() - t0) * 1000
 
     if results:
-        if isinstance(results, dict):
-            results = [results]
         return results, latency_ms, None
 
-    return [], latency_ms, err
+    return [], latency_ms, err or "Face could not be isolated"
 
 
 # =============================================================================
@@ -1356,9 +1367,9 @@ else:
         # -----------------------------------------------------------------
         calibrated_emotions = {k: float(v) for k, v in res_primary["emotion"].items()}
         
-        # If smiling (Happy > 20%), dampen the false-positive resting "sad" score
-        if calibrated_emotions.get("happy", 0.0) > 20.0:
-            calibrated_emotions["sad"] = calibrated_emotions.get("sad", 0.0) * 0.35
+        # Dampen false resting "sad" if smiling signals are present
+        if calibrated_emotions.get("happy", 0.0) > 15.0:
+            calibrated_emotions["sad"] = calibrated_emotions.get("sad", 0.0) * 0.25
             
         dominant_label = max(calibrated_emotions, key=calibrated_emotions.get).lower()
         dominant_conf = float(calibrated_emotions[dominant_label])
