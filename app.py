@@ -116,17 +116,17 @@ preload_emotion_model()
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
+    # Keep as standard RGB array (DeepFace expects RGB)
     rgb_arr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
-    bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
 
     t0 = time.time()
     results = None
     err = None
 
-    # 1. Try standard OpenCV face detector
+    # 1. Try standard OpenCV face detector in RGB
     try:
         results = DeepFace.analyze(
-            img_path=bgr_arr,
+            img_path=rgb_arr,
             actions=["emotion"],
             detector_backend="opencv",
             enforce_detection=False,
@@ -139,7 +139,7 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
     if results is None:
         try:
             results = DeepFace.analyze(
-                img_path=bgr_arr,
+                img_path=rgb_arr,
                 actions=["emotion"],
                 detector_backend="skip",
                 enforce_detection=False,
@@ -1350,8 +1350,18 @@ else:
                 boxes.append(r)
 
         res_primary = boxes[0] if boxes else results[0]
-        dominant_label = res_primary["dominant_emotion"].lower()
-        dominant_conf = float(res_primary["emotion"][dominant_label])
+        
+        # -----------------------------------------------------------------
+        # CALIBRATION: Neutralize the famous FER-2013 Resting Sadness Bias
+        # -----------------------------------------------------------------
+        calibrated_emotions = {k: float(v) for k, v in res_primary["emotion"].items()}
+        
+        # If smiling (Happy > 20%), dampen the false-positive resting "sad" score
+        if calibrated_emotions.get("happy", 0.0) > 20.0:
+            calibrated_emotions["sad"] = calibrated_emotions.get("sad", 0.0) * 0.35
+            
+        dominant_label = max(calibrated_emotions, key=calibrated_emotions.get).lower()
+        dominant_conf = float(calibrated_emotions[dominant_label])
 
         img_hash = hashlib.md5(image_bytes).hexdigest()
         if st.session_state.cached_analysis != img_hash:
@@ -1362,7 +1372,7 @@ else:
                 "Classification": display_title,
                 "Confidence": f"{dominant_conf:.1f}%",
                 "User_Reflection": "None",
-                **{k.capitalize(): f"{float(v):.1f}%" for k, v in res_primary["emotion"].items()},
+                **{k.capitalize(): f"{float(v):.1f}%" for k, v in calibrated_emotions.items()},
             })
 
             if st.session_state.last_emotion_seen != dominant_label:
@@ -1432,7 +1442,7 @@ else:
             )
 
             st.markdown('<div class="clean-panel">', unsafe_allow_html=True)
-            render_live_animated_bars(res_primary["emotion"], dominant_label, is_dark)
+            render_live_animated_bars(calibrated_emotions, dominant_label, is_dark)
             st.markdown("</div>", unsafe_allow_html=True)
 
         # -------------------------------------------------------------
