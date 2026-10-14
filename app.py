@@ -95,31 +95,37 @@ if st.session_state.trigger_celebration:
     st.session_state.trigger_celebration = False
 
 
-@st.cache_resource(show_spinner=False)
-def preload_emotion_model():
-    dummy_frame = np.zeros((112, 112, 3), dtype=np.uint8)
-    try:
-        DeepFace.analyze(
-            img_path=dummy_frame,
-            actions=["emotion"],
-            detector_backend="skip",
-            enforce_detection=False,
-            silent=True,
-        )
-    except Exception:
-        pass
-    return True
+# =============================================================================
+# HSEMOTION MODEL ENGINE (AFFECTNET PRETRAINED)
+# =============================================================================
+
+HSE_LABELS = [
+    "anger", "contempt", "disgust", "fear",
+    "happiness", "neutral", "sadness", "surprise"
+]
+
+HSE_TO_APP = {
+    "anger": "angry",
+    "disgust": "disgust",
+    "fear": "fear",
+    "happiness": "happy",
+    "neutral": "neutral",
+    "sadness": "sad",
+    "surprise": "surprise",
+}
 
 
-preload_emotion_model()
+@st.cache_resource(show_spinner="Initializing AffectNet Neural Engine...")
+def load_hse_model():
+    from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
+    return HSEmotionRecognizer(model_name="enet_b0_8_best_vgaf")
 
 
-# -----------------------------------------------------------------------------
-# 1) ENHANCE WEBCAM FRAME (Mild contrast fix without sharpening)
-# -----------------------------------------------------------------------------
+load_hse_model()
+
+
 def enhance_webcam_frame(rgb_image: np.ndarray) -> np.ndarray:
-    """Very mild contrast fix only. Heavy sharpening distorts the face
-    texture the emotion model relies on and pushes results toward sad/angry."""
+    """Very mild contrast balance without heavy unsharp masking."""
     lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
     l, a, b = cv2.split(lab)
     clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8))
@@ -127,45 +133,69 @@ def enhance_webcam_frame(rgb_image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2RGB)
 
 
-# -----------------------------------------------------------------------------
-# 2) RUN DEEPFACE INFERENCE (BGR alignment, robust backends, face alignment)
-# -----------------------------------------------------------------------------
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
     rgb_arr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
     bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
 
     t0 = time.time()
-    results, err = None, None
+    faces = []
 
+    # 1. Face isolation using DeepFace detectors
     for backend in ["yunet", "ssd", "opencv"]:
         try:
-            res = DeepFace.analyze(
+            found = DeepFace.extract_faces(
                 img_path=bgr_arr,
-                actions=["emotion"],
                 detector_backend=backend,
                 enforce_detection=True,
-                align=True,
-                silent=True,
+                align=False,
             )
-            if res:
-                results = res if isinstance(res, list) else [res]
-                results = [
-                    r for r in results
-                    if r["region"]["w"] >= 40 and r["region"]["h"] >= 40
-                    and not (r["region"]["w"] >= width * 0.95
-                             and r["region"]["h"] >= height * 0.95)
-                ]
-                if results:
-                    break
-        except Exception as e:
-            err = str(e)
+            found = [
+                f for f in found
+                if f["facial_area"]["w"] >= 40 and f["facial_area"]["h"] >= 40
+                and not (f["facial_area"]["w"] >= width * 0.95
+                         and f["facial_area"]["h"] >= height * 0.95)
+            ]
+            if found:
+                faces = found
+                break
+        except Exception:
             continue
+
+    if not faces:
+        return [], (time.time() - t0) * 1000, "No clear face found. Face the camera directly in clear lighting."
+
+    # 2. Emotion analysis via HSEmotion on padded facial crop
+    model = load_hse_model()
+    results = []
+    for f in faces:
+        a = f["facial_area"]
+        x, y, w, h = int(a["x"]), int(a["y"]), int(a["w"]), int(a["h"])
+
+        pad = int(0.15 * max(w, h))
+        x1, y1 = max(0, x - pad), max(0, y - pad)
+        x2, y2 = min(width, x + w + pad), min(height, y + h + pad)
+        crop = rgb_arr[y1:y2, x1:x2]
+        if crop.size == 0:
+            continue
+
+        _, probs = model.predict_emotions(crop, logits=False)
+        probs = np.asarray(probs).flatten().tolist()
+        raw = dict(zip(HSE_LABELS, probs))
+
+        emo = {HSE_TO_APP[k]: float(raw[k]) for k in HSE_TO_APP}
+        total = sum(emo.values()) or 1.0
+        emo = {k: v / total * 100 for k, v in emo.items()}
+
+        results.append({
+            "region": {"x": x, "y": y, "w": w, "h": h},
+            "emotion": emo,
+        })
 
     latency_ms = (time.time() - t0) * 1000
     if results:
         return results, latency_ms, None
-    return [], latency_ms, "No clear face found. Face the camera, ensure good light, and avoid heavy shadows."
+    return [], latency_ms, "Face found but could not be processed. Please retake the photo."
 
 
 # =============================================================================
@@ -1351,29 +1381,15 @@ else:
     elif not results:
         st.warning("No face clearly recognized. Center your face in good lighting and retake.")
     else:
-        boxes = []
-        for r in results:
-            reg = r.get("region", {})
-            rx, ry, rw, rh = int(reg.get("x", 0)), int(reg.get("y", 0)), int(reg.get("w", 0)), int(reg.get("h", 0))
-            is_fallback = (rx == 0 and ry == 0 and rw >= W * 0.95 and rh >= H * 0.95)
-            if not is_fallback and rw >= 30 and rh >= 30:
-                boxes.append(r)
+        res_primary = results[0]
+        boxes = [res_primary]
 
-        res_primary = boxes[0] if boxes else results[0]
-
-        # -----------------------------------------------------------------
-        # 3) CALIBRATION & AMBIGUITY GATING
-        # -----------------------------------------------------------------
         calibrated_emotions = {k: float(v) for k, v in res_primary["emotion"].items()}
-        total = sum(calibrated_emotions.values()) or 1.0
-        calibrated_emotions = {k: v / total * 100 for k, v in calibrated_emotions.items()}
-
         ranked = sorted(calibrated_emotions.items(), key=lambda kv: kv[1], reverse=True)
         dominant_label, dominant_conf = ranked[0][0].lower(), float(ranked[0][1])
         runner_up_conf = float(ranked[1][1])
         margin = dominant_conf - runner_up_conf
 
-        # Gate out ambiguous/guessing predictions
         is_ambiguous = dominant_conf < 35 or margin < 10
 
         img_hash = hashlib.md5(image_bytes).hexdigest()
@@ -1410,7 +1426,7 @@ else:
                 unsafe_allow_html=True,
             )
             st.image(rendered_frame, use_container_width=True)
-            num_faces_label = str(len(boxes)) if boxes else "1 (Portrait)"
+            num_faces_label = str(len(boxes)) if boxes else "1"
             st.markdown(
                 f"""
                     <div class="stat-row">
