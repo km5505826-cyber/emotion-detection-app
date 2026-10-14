@@ -8,7 +8,7 @@ from PIL import Image, ImageOps
 import numpy as np
 import cv2
 import pandas as pd
-from deepface import DeepFace
+from deepface import DeepFace  # used ONLY to detect faces
 
 # =============================================================================
 # PAGE CONFIG
@@ -96,14 +96,16 @@ if st.session_state.trigger_celebration:
 
 
 # =============================================================================
-# HSEMOTION MODEL ENGINE (AFFECTNET PRETRAINED)
+# EMOTION MODELS (HSEmotion ensemble, trained on AffectNet)
 # =============================================================================
 
+# Output order of the 8-class HSEmotion models
 HSE_LABELS = [
     "anger", "contempt", "disgust", "fear",
-    "happiness", "neutral", "sadness", "surprise"
+    "happiness", "neutral", "sadness", "surprise",
 ]
 
+# Map to the 7 labels this app uses ("contempt" is dropped, then rescaled)
 HSE_TO_APP = {
     "anger": "angry",
     "disgust": "disgust",
@@ -114,34 +116,58 @@ HSE_TO_APP = {
     "surprise": "surprise",
 }
 
+HSE_MODEL_NAMES = ["enet_b0_8_best_vgaf", "enet_b0_8_best_afew"]
+CROP_PADDINGS = (0.10, 0.22)  # two face-crop margins; results are averaged
 
-@st.cache_resource(show_spinner="Initializing AffectNet Neural Engine...")
-def load_hse_model():
+
+@st.cache_resource(show_spinner="Loading emotion models...")
+def load_hse_models():
     from hsemotion_onnx.facial_emotions import HSEmotionRecognizer
-    return HSEmotionRecognizer(model_name="enet_b0_8_best_vgaf")
+    return [HSEmotionRecognizer(model_name=n) for n in HSE_MODEL_NAMES]
 
 
-load_hse_model()
+load_hse_models()
+
+
+def predict_emotion_probs(crops_rgb: list) -> np.ndarray:
+    """Average probabilities over models x crops x (original + mirrored)."""
+    models = load_hse_models()
+    collected = []
+    for crop in crops_rgb:
+        for view in (crop, crop[:, ::-1]):  # original + mirrored
+            view = np.ascontiguousarray(view)
+            for m in models:
+                _, p = m.predict_emotions(view, logits=False)
+                p = np.asarray(p, dtype=np.float64).flatten()
+                if p.shape[0] == len(HSE_LABELS):
+                    collected.append(p)
+    if not collected:
+        raise ValueError("no predictions")
+    return np.mean(collected, axis=0)
 
 
 def enhance_webcam_frame(rgb_image: np.ndarray) -> np.ndarray:
-    """Very mild contrast balance without heavy unsharp masking."""
+    """Only brightens dark webcam frames. Well-lit photos stay untouched."""
+    brightness = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2GRAY).mean()
+    if brightness >= 90:
+        return rgb_image
     lab = cv2.cvtColor(rgb_image, cv2.COLOR_RGB2LAB)
     l, a, b = cv2.split(lab)
-    clahe = cv2.createCLAHE(clipLimit=1.2, tileGridSize=(8, 8))
-    l = clahe.apply(l)
+    l = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8)).apply(l)
     return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2RGB)
 
 
 @st.cache_data(show_spinner=False, max_entries=8)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
+    """Detect faces with DeepFace, classify emotion with the HSEmotion ensemble.
+    Returns (results, latency_ms, error). Each result has 'region' and 'emotion' (percentages)."""
     rgb_arr = np.frombuffer(image_bytes, np.uint8).reshape((height, width, 3))
     bgr_arr = cv2.cvtColor(rgb_arr, cv2.COLOR_RGB2BGR)
 
     t0 = time.time()
     faces = []
 
-    # 1. Face isolation using DeepFace detectors
+    # 1) Find faces
     for backend in ["yunet", "ssd", "opencv"]:
         try:
             found = DeepFace.extract_faces(
@@ -163,26 +189,32 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
             continue
 
     if not faces:
-        return [], (time.time() - t0) * 1000, "No clear face found. Face the camera directly in clear lighting."
+        return [], (time.time() - t0) * 1000, \
+            "No clear face found. Face the camera, good light, no heavy shadows."
 
-    # 2. Emotion analysis via HSEmotion on padded facial crop
-    model = load_hse_model()
+    # 2) Classify each face (ensemble + test-time augmentation)
     results = []
     for f in faces:
         a = f["facial_area"]
         x, y, w, h = int(a["x"]), int(a["y"]), int(a["w"]), int(a["h"])
 
-        pad = int(0.15 * max(w, h))
-        x1, y1 = max(0, x - pad), max(0, y - pad)
-        x2, y2 = min(width, x + w + pad), min(height, y + h + pad)
-        crop = rgb_arr[y1:y2, x1:x2]
-        if crop.size == 0:
+        crops = []
+        for pad_frac in CROP_PADDINGS:
+            pad = int(pad_frac * max(w, h))
+            x1, y1 = max(0, x - pad), max(0, y - pad)
+            x2, y2 = min(width, x + w + pad), min(height, y + h + pad)
+            c = rgb_arr[y1:y2, x1:x2]
+            if c.size:
+                crops.append(c)
+        if not crops:
             continue
 
-        _, probs = model.predict_emotions(crop, logits=False)
-        probs = np.asarray(probs).flatten().tolist()
-        raw = dict(zip(HSE_LABELS, probs))
+        try:
+            probs = predict_emotion_probs(crops)
+        except Exception:
+            continue
 
+        raw = dict(zip(HSE_LABELS, probs.tolist()))
         emo = {HSE_TO_APP[k]: float(raw[k]) for k in HSE_TO_APP}
         total = sum(emo.values()) or 1.0
         emo = {k: v / total * 100 for k, v in emo.items()}
@@ -195,7 +227,36 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
     latency_ms = (time.time() - t0) * 1000
     if results:
         return results, latency_ms, None
-    return [], latency_ms, "Face found but could not be processed. Please retake the photo."
+    return [], latency_ms, "Face found but could not be read. Retake the photo."
+
+
+def assess_quality(rgb: np.ndarray, region: dict) -> list:
+    """Heuristic checks: bad input photos are a top cause of wrong emotions."""
+    x, y = max(0, int(region["x"])), max(0, int(region["y"]))
+    w, h = int(region["w"]), int(region["h"])
+    face = rgb[y:y + h, x:x + w]
+    notes = []
+    if face.size == 0:
+        return notes
+
+    if min(w, h) < 90:
+        notes.append("📏 Face is small in the frame. Move closer for a more reliable reading.")
+
+    gray = cv2.cvtColor(cv2.resize(face, (128, 128)), cv2.COLOR_RGB2GRAY)
+
+    if cv2.Laplacian(gray, cv2.CV_64F).var() < 25:
+        notes.append("🔍 Photo looks blurry. Hold still or use a sharper image.")
+
+    mean_b = float(gray.mean())
+    if mean_b < 70:
+        notes.append("🌑 Face is too dark. Face a light source.")
+    elif mean_b > 200:
+        notes.append("☀️ Face is overexposed. Reduce direct glare.")
+
+    if abs(float(gray[:, :64].mean()) - float(gray[:, 64:].mean())) > 45:
+        notes.append("💡 Uneven lighting (one side of the face is in shadow). Shadows are often misread as sad or angry.")
+
+    return notes
 
 
 # =============================================================================
@@ -809,7 +870,7 @@ components.html(
                 const chars = Array.from(rawText);
                 let emojiBuf = [];
                 let i = 0;
-                
+
                 const isEmojiChar = (ch) => /\\p{{Extended_Pictographic}}|\\uFE0F|\\u200D/u.test(ch);
 
                 while (i < chars.length && (isEmojiChar(chars[i]) || chars[i] === ' ')) {{
@@ -1100,17 +1161,17 @@ def draw_clean_bounding(image_rgb: np.ndarray, detections: list, is_dark_mode: b
 
 def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: bool):
     sorted_scores = [
-        [str(emotion), float(val)] 
+        [str(emotion), float(val)]
         for emotion, val in sorted(scores.items(), key=lambda item: float(item[1]), reverse=True)
     ]
     payload = json.dumps(sorted_scores)
-    
+
     bg_track = "rgba(10, 25, 48, 0.75)" if is_dark_mode else "rgba(226, 232, 240, 0.9)"
     track_border = "rgba(56, 189, 248, 0.25)" if is_dark_mode else "rgba(2, 132, 199, 0.25)"
     bar_inactive_color = "rgba(51, 65, 85, 0.65)" if is_dark_mode else "rgba(203, 213, 225, 0.85)"
     text_color = "#FFFFFF" if is_dark_mode else "#0F172A"
     grid_color = "rgba(56, 189, 248, 0.12)" if is_dark_mode else "rgba(2, 132, 199, 0.14)"
-    
+
     html_code = f"""
     <!DOCTYPE html>
     <html>
@@ -1130,13 +1191,13 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
         padding: 8px 4px 6px 4px;
         overflow: hidden;
       }}
-      
+
       @keyframes ambientTextFlow {{
         0%   {{ background-position: 0% 50%; }}
         50%  {{ background-position: 100% 50%; }}
         100% {{ background-position: 0% 50%; }}
       }}
-      
+
       .chart-container {{
         display: flex;
         flex-direction: column;
@@ -1381,15 +1442,34 @@ else:
     elif not results:
         st.warning("No face clearly recognized. Center your face in good lighting and retake.")
     else:
-        res_primary = results[0]
-        boxes = [res_primary]
+        boxes = []
+        for r in results:
+            reg = r.get("region", {})
+            rx, ry, rw, rh = int(reg.get("x", 0)), int(reg.get("y", 0)), int(reg.get("w", 0)), int(reg.get("h", 0))
+            is_fallback = (rx == 0 and ry == 0 and rw >= W * 0.95 and rh >= H * 0.95)
+            if not is_fallback and rw >= 30 and rh >= 30:
+                boxes.append(r)
 
+        res_primary = boxes[0] if boxes else results[0]
+
+        # Photo quality hints (blur, darkness, small face, uneven light)
+        for note in assess_quality(image_np, res_primary["region"]):
+            st.info(note)
+
+        # -----------------------------------------------------------------
+        # SCORES & AMBIGUITY GATING (no artificial score multipliers)
+        # -----------------------------------------------------------------
         calibrated_emotions = {k: float(v) for k, v in res_primary["emotion"].items()}
+        total = sum(calibrated_emotions.values()) or 1.0
+        calibrated_emotions = {k: v / total * 100 for k, v in calibrated_emotions.items()}
+
         ranked = sorted(calibrated_emotions.items(), key=lambda kv: kv[1], reverse=True)
         dominant_label, dominant_conf = ranked[0][0].lower(), float(ranked[0][1])
         runner_up_conf = float(ranked[1][1])
+        second_label = ranked[1][0].capitalize()
         margin = dominant_conf - runner_up_conf
 
+        # Gate out ambiguous / guessing predictions
         is_ambiguous = dominant_conf < 35 or margin < 10
 
         img_hash = hashlib.md5(image_bytes).hexdigest()
@@ -1426,7 +1506,7 @@ else:
                 unsafe_allow_html=True,
             )
             st.image(rendered_frame, use_container_width=True)
-            num_faces_label = str(len(boxes)) if boxes else "1"
+            num_faces_label = str(len(boxes)) if boxes else "1 (Portrait)"
             st.markdown(
                 f"""
                     <div class="stat-row">
@@ -1457,6 +1537,9 @@ else:
                         <span class="raw-emoji">{display_emoji}</span>
                         <span class="shimmer-txt">{display_title}</span>
                         <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({dominant_conf:.1f}%)</span>
+                    </div>
+                    <div style="font-size:0.78rem; color:{text_muted}; margin-top:4px;">
+                        Also detected: {second_label} ({runner_up_conf:.1f}%)
                     </div>
                     <div style="height: 8px; width: 100%; background: rgba(51, 65, 85, 0.6); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.2);">
                         <div style="height: 100%; width: {min(dominant_conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
