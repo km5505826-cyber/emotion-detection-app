@@ -1274,6 +1274,15 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
       }}
       .fill {{
         min-width: 6px;
+        background: {text_shimmer};
+        background-size: 250% auto;
+        animation: ambientTextFlow 7s ease infinite;
+      }}
+      .fill.rank0 {{
+        box-shadow: 0 0 14px {accent_tint};
+      }}
+      .fill.rank1 {{
+        box-shadow: 0 0 8px {accent_tint}99;
       }}
       .fill.rank0::after {{
         content: '';
@@ -1336,17 +1345,6 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
         const dominant = "{dominant_raw.lower()}";
         const container = document.getElementById("chart");
 
-        // every emotion gets its own colour so mixed expressions are visible
-        const PALETTE = {{
-          happy:    ["#f59e0b", "#fde047"],
-          neutral:  ["#0ea5e9", "#7dd3fc"],
-          sad:      ["#6366f1", "#a5b4fc"],
-          angry:    ["#ef4444", "#fca5a5"],
-          disgust:  ["#10b981", "#6ee7b7"],
-          surprise: ["#ec4899", "#f9a8d4"],
-          fear:     ["#a855f7", "#d8b4fe"]
-        }};
-
         data.forEach(([emotion, val], idx) => {{
           const row = document.createElement("div");
           row.className = "bar-row";
@@ -1359,14 +1357,9 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
           track.className = "track";
 
           const fill = document.createElement("div");
-          const pal = PALETTE[emotion.toLowerCase()] || ["#0284c7", "#38bdf8"];
           fill.className = "fill" + (idx === 0 ? " rank0" : (idx === 1 ? " rank1" : ""));
-          fill.style.background = "linear-gradient(90deg, " + pal[0] + ", " + pal[1] + ")";
-          if (idx === 0) {{
-            fill.style.boxShadow = "0 0 14px " + pal[1];
-          }} else if (idx === 1) {{
-            fill.style.boxShadow = "0 0 8px " + pal[1] + "99";
-          }}
+          // stagger each bar's light flow so the glow ripples down the chart
+          fill.style.animationDelay = (-idx * 0.9) + "s";
 
           const valText = document.createElement("div");
           valText.className = "val-text";
