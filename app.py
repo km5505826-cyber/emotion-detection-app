@@ -711,6 +711,22 @@ div[data-testid="stCameraInput"] video {{
     border-radius: 14px !important;
 }}
 
+.st-key-feed_panel,
+.st-key-bars_panel,
+.st-key-coach_panel {{
+    background: {card_bg};
+    border: 1.5px solid {capsule_border};
+    box-shadow: {capsule_glow};
+    border-radius: 24px;
+    padding: 1.4rem;
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    margin-bottom: 1.2rem;
+}}
+.st-key-coach_panel {{
+    padding: 20px 24px;
+}}
+
 .clean-panel {{
     background: {card_bg};
     border: 1.5px solid {capsule_border};
@@ -1168,7 +1184,6 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
 
     bg_track = "rgba(10, 25, 48, 0.75)" if is_dark_mode else "rgba(226, 232, 240, 0.9)"
     track_border = "rgba(56, 189, 248, 0.25)" if is_dark_mode else "rgba(2, 132, 199, 0.25)"
-    bar_inactive_color = "rgba(51, 65, 85, 0.65)" if is_dark_mode else "rgba(203, 213, 225, 0.85)"
     text_color = "#FFFFFF" if is_dark_mode else "#0F172A"
     grid_color = "rgba(56, 189, 248, 0.12)" if is_dark_mode else "rgba(2, 132, 199, 0.14)"
 
@@ -1257,13 +1272,10 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
         transition: width 1.25s cubic-bezier(0.16, 1, 0.3, 1);
         position: relative;
       }}
-      .fill.active {{
-        background: linear-gradient(90deg, #0284c7 0%, #38bdf8 50%, #c084fc 100%);
-        background-size: 200% auto;
-        animation: ambientTextFlow 4s ease infinite;
-        box-shadow: 0 0 14px rgba(56, 189, 248, 0.85);
+      .fill {{
+        min-width: 6px;
       }}
-      .fill.active::after {{
+      .fill.rank0::after {{
         content: '';
         position: absolute;
         right: 0;
@@ -1273,9 +1285,6 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
         background: #ffffff;
         border-radius: 50%;
         box-shadow: 0 0 8px #ffffff;
-      }}
-      .fill.inactive {{
-        background: {bar_inactive_color};
       }}
       .val-text {{
         width: 54px;
@@ -1327,8 +1336,18 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
         const dominant = "{dominant_raw.lower()}";
         const container = document.getElementById("chart");
 
-        data.forEach(([emotion, val]) => {{
-          const isDom = emotion.toLowerCase() === dominant;
+        // every emotion gets its own colour so mixed expressions are visible
+        const PALETTE = {{
+          happy:    ["#f59e0b", "#fde047"],
+          neutral:  ["#0ea5e9", "#7dd3fc"],
+          sad:      ["#6366f1", "#a5b4fc"],
+          angry:    ["#ef4444", "#fca5a5"],
+          disgust:  ["#10b981", "#6ee7b7"],
+          surprise: ["#ec4899", "#f9a8d4"],
+          fear:     ["#a855f7", "#d8b4fe"]
+        }};
+
+        data.forEach(([emotion, val], idx) => {{
           const row = document.createElement("div");
           row.className = "bar-row";
 
@@ -1340,7 +1359,14 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
           track.className = "track";
 
           const fill = document.createElement("div");
-          fill.className = "fill " + (isDom ? "active" : "inactive");
+          const pal = PALETTE[emotion.toLowerCase()] || ["#0284c7", "#38bdf8"];
+          fill.className = "fill" + (idx === 0 ? " rank0" : (idx === 1 ? " rank1" : ""));
+          fill.style.background = "linear-gradient(90deg, " + pal[0] + ", " + pal[1] + ")";
+          if (idx === 0) {{
+            fill.style.boxShadow = "0 0 14px " + pal[1];
+          }} else if (idx === 1) {{
+            fill.style.boxShadow = "0 0 8px " + pal[1] + "99";
+          }}
 
           const valText = document.createElement("div");
           valText.className = "val-text";
@@ -1472,10 +1498,22 @@ else:
         # Gate out ambiguous / guessing predictions
         is_ambiguous = dominant_conf < 35 or margin < 10
 
+        # Two emotions nearly tied AND together dominant -> show them as a blend
+        is_mixed = margin < 10 and (dominant_conf + runner_up_conf) >= 70
+        if is_mixed:
+            classification_title = f"{dominant_label.capitalize()} + {second_label}"
+            classification_emoji = EMOJI_MAP.get(dominant_label, "") + EMOJI_MAP.get(second_label.lower(), "")
+        elif is_ambiguous:
+            classification_title = "Ambiguous / Inconclusive"
+            classification_emoji = "🤔"
+        else:
+            classification_title = dominant_label.capitalize()
+            classification_emoji = EMOJI_MAP.get(dominant_label, "•")
+
         img_hash = hashlib.md5(image_bytes).hexdigest()
         if st.session_state.cached_analysis != img_hash:
             st.session_state.cached_analysis = img_hash
-            display_title = "Ambiguous / Inconclusive" if is_ambiguous else dominant_label.capitalize()
+            display_title = classification_title
             st.session_state.history.append({
                 "Timestamp": time.strftime("%H:%M:%S"),
                 "Classification": display_title,
@@ -1498,34 +1536,27 @@ else:
         col_img, col_graph = st.columns([1.05, 1.0], gap="medium")
 
         with col_img:
-            st.markdown(
-                f"""
-                <div class="clean-panel">
-                    <div class="feed-header-title">Optical Feed Result</div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.image(rendered_frame, use_container_width=True)
-            num_faces_label = str(len(boxes)) if boxes else "1 (Portrait)"
-            st.markdown(
-                f"""
+            with st.container(key="feed_panel"):
+                st.markdown(
+                    '<div class="feed-header-title">Optical Feed Result</div>',
+                    unsafe_allow_html=True,
+                )
+                st.image(rendered_frame, use_container_width=True)
+                num_faces_label = str(len(boxes)) if boxes else "1 (Portrait)"
+                st.markdown(
+                    f"""
                     <div class="stat-row">
                         <div class="stat-item"><div class="stat-label">Faces</div><div class="stat-value">{num_faces_label}</div></div>
                         <div class="stat-item"><div class="stat-label">Latency</div><div class="stat-value">{latency:.0f} ms</div></div>
                         <div class="stat-item"><div class="stat-label">Resolution</div><div class="stat-value">{W}x{H}</div></div>
                     </div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+                    """,
+                    unsafe_allow_html=True,
+                )
 
         with col_graph:
-            if is_ambiguous:
-                display_title = "Ambiguous / Inconclusive"
-                display_emoji = "🤔"
-            else:
-                display_title = dominant_label.capitalize()
-                display_emoji = EMOJI_MAP.get(dominant_label, "•")
+            display_title = classification_title
+            display_emoji = classification_emoji
 
             st.markdown(
                 f"""
@@ -1553,85 +1584,83 @@ else:
                 unsafe_allow_html=True,
             )
 
-            st.markdown('<div class="clean-panel">', unsafe_allow_html=True)
-            render_live_animated_bars(calibrated_emotions, dominant_label, is_dark)
-            st.markdown("</div>", unsafe_allow_html=True)
+            with st.container(key="bars_panel"):
+                render_live_animated_bars(calibrated_emotions, dominant_label, is_dark)
 
         # -------------------------------------------------------------
         # 2. WELLNESS COACH
         # -------------------------------------------------------------
-        st.markdown(
-            f"""
-            <div class="chat-capsule-container">
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
-                    <span style="font-size: 1.35rem;">🌿</span>
-                    <div class="ambient-glow-text" style="font-weight: 800; font-size: 1.15rem;">
-                        Grounded Mental Wellness Coach
+        with st.container(key="coach_panel"):
+            st.markdown(
+                f"""
+                    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 14px;">
+                        <span style="font-size: 1.35rem;">🌿</span>
+                        <div class="ambient-glow-text" style="font-weight: 800; font-size: 1.15rem;">
+                            Grounded Mental Wellness Coach
+                        </div>
                     </div>
-                </div>
-            """,
-            unsafe_allow_html=True,
-        )
+                """,
+                unsafe_allow_html=True,
+            )
 
-        for msg in st.session_state.chat_messages:
-            if msg["role"] == "ai":
-                st.markdown(
-                    f'<div class="chat-bubble-ai"><strong>Coach:</strong> {msg["content"]}</div>',
-                    unsafe_allow_html=True,
-                )
-            else:
-                st.markdown(
-                    f'<div class="chat-bubble-user"><strong>You:</strong> {msg["content"]}</div>',
-                    unsafe_allow_html=True,
-                )
+            for msg in st.session_state.chat_messages:
+                if msg["role"] == "ai":
+                    st.markdown(
+                        f'<div class="chat-bubble-ai"><strong>Coach:</strong> {msg["content"]}</div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.markdown(
+                        f'<div class="chat-bubble-user"><strong>You:</strong> {msg["content"]}</div>',
+                        unsafe_allow_html=True,
+                    )
 
-        presets = EMOTION_PRESETS.get(dominant_label, EMOTION_PRESETS["neutral"])
-        st.markdown(
-            f'<div class="preset-title">🌱 Check In (Or Type Below):</div>',
-            unsafe_allow_html=True,
-        )
+            presets = EMOTION_PRESETS.get(dominant_label, EMOTION_PRESETS["neutral"])
+            st.markdown(
+                f'<div class="preset-title">🌱 Check In (Or Type Below):</div>',
+                unsafe_allow_html=True,
+            )
 
-        p_cols = st.columns(3)
-        selected_preset = None
+            p_cols = st.columns(3)
+            selected_preset = None
 
-        for p_idx, preset_text in enumerate(presets):
-            with p_cols[p_idx]:
-                if st.button(preset_text, key=f"preset_btn_primary_{p_idx}"):
-                    selected_preset = preset_text
+            for p_idx, preset_text in enumerate(presets):
+                with p_cols[p_idx]:
+                    if st.button(preset_text, key=f"preset_btn_primary_{p_idx}"):
+                        selected_preset = preset_text
 
-        if selected_preset:
-            st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
-            if len(st.session_state.history) > 0:
-                st.session_state.history[-1]["User_Reflection"] = selected_preset
-            bot_reply = generate_companion_reply(selected_preset, dominant_label)
-            st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-            if dominant_label in ["happy", "surprise"]:
-                st.session_state.trigger_celebration = True
-            st.rerun()
+            if selected_preset:
+                st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
+                if len(st.session_state.history) > 0:
+                    st.session_state.history[-1]["User_Reflection"] = selected_preset
+                bot_reply = generate_companion_reply(selected_preset, dominant_label)
+                st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
+                if dominant_label in ["happy", "surprise"]:
+                    st.session_state.trigger_celebration = True
+                st.rerun()
 
-        with st.form("wellness_coach_chat_form", clear_on_submit=True):
-            chat_col_input, chat_col_btn = st.columns([4.2, 1.1])
-            with chat_col_input:
-                user_chat_text = st.text_input(
-                    "Message Coach",
-                    placeholder="Check in or share what's on your mind...",
-                    label_visibility="collapsed",
-                )
-            with chat_col_btn:
-                submitted = st.form_submit_button("Reflect 🌿")
-                if submitted:
-                    text_to_send = user_chat_text.strip()
-                    if text_to_send:
-                        st.session_state.chat_messages.append({"role": "user", "content": text_to_send})
-                        if len(st.session_state.history) > 0:
-                            st.session_state.history[-1]["User_Reflection"] = text_to_send
-                        bot_reply = generate_companion_reply(text_to_send, dominant_label)
-                        st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-                        if dominant_label in ["happy", "surprise"]:
-                            st.session_state.trigger_celebration = True
-                        st.rerun()
+            with st.form("wellness_coach_chat_form", clear_on_submit=True):
+                chat_col_input, chat_col_btn = st.columns([4.2, 1.1])
+                with chat_col_input:
+                    user_chat_text = st.text_input(
+                        "Message Coach",
+                        placeholder="Check in or share what's on your mind...",
+                        label_visibility="collapsed",
+                    )
+                with chat_col_btn:
+                    submitted = st.form_submit_button("Reflect 🌿")
+                    if submitted:
+                        text_to_send = user_chat_text.strip()
+                        if text_to_send:
+                            st.session_state.chat_messages.append({"role": "user", "content": text_to_send})
+                            if len(st.session_state.history) > 0:
+                                st.session_state.history[-1]["User_Reflection"] = text_to_send
+                            bot_reply = generate_companion_reply(text_to_send, dominant_label)
+                            st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
+                            if dominant_label in ["happy", "surprise"]:
+                                st.session_state.trigger_celebration = True
+                            st.rerun()
 
-        st.markdown('</div>', unsafe_allow_html=True)
 
 # =============================================================================
 # SESSION HISTORY
@@ -1664,7 +1693,7 @@ if len(st.session_state.history) > 0:
     for item in st.session_state.history[-5:][::-1]:
         classification = item["Classification"]
         reflection = item.get("User_Reflection", "None")
-        emoji = EMOJI_MAP.get(classification.lower(), "🤔")
+        emoji = EMOJI_MAP.get(classification.lower().split(" ")[0], "🤔")
         reflection_markup = (
             f'<div style="font-size:0.75rem; color:{accent_tint}; margin-top:2px;">Check-In: "{reflection}"</div>'
             if reflection != "None"
