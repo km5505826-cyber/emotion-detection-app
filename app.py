@@ -1,3 +1,4 @@
+import io
 import time
 import json
 import os
@@ -32,6 +33,19 @@ EMOJI_MAP = {
     "surprise": "😲",
     "neutral": "😐",
 }
+
+# How "pleasant" each emotion is. Used for the mood trend line (-1 = unpleasant, +1 = pleasant).
+VALENCE = {
+    "happy": 1.0,
+    "surprise": 0.25,
+    "neutral": 0.0,
+    "sad": -0.8,
+    "fear": -0.7,
+    "angry": -0.8,
+    "disgust": -0.7,
+}
+
+MAX_PHOTOS = 5  # max photos for multi-photo averaging
 
 EMOTION_PRESETS = {
     "happy": [
@@ -159,7 +173,7 @@ def enhance_webcam_frame(rgb_image: np.ndarray) -> np.ndarray:
     return cv2.cvtColor(cv2.merge((l, a, b)), cv2.COLOR_LAB2RGB)
 
 
-@st.cache_data(show_spinner=False, max_entries=8)
+@st.cache_data(show_spinner=False, max_entries=16)
 def run_deepface_inference(image_bytes: bytes, width: int, height: int):
     """Detect faces with DeepFace, classify emotion with the HSEmotion ensemble.
     Returns (results, latency_ms, error). Each result has 'region' and 'emotion' (percentages)."""
@@ -259,6 +273,96 @@ def assess_quality(rgb: np.ndarray, region: dict) -> list:
         notes.append("💡 Uneven lighting (one side of the face is in shadow). Shadows are often misread as sad or angry.")
 
     return notes
+
+
+# =============================================================================
+# IMAGE LOADING, FACE SCORING & CLASSIFICATION HELPERS
+# =============================================================================
+
+def load_rgb(file_obj, is_camera: bool) -> np.ndarray:
+    """Open an uploaded / camera file as a resized RGB array (webcam shots are mirrored + brightened if dark)."""
+    img = Image.open(io.BytesIO(file_obj.getvalue()))
+    img = ImageOps.exif_transpose(img)
+
+    max_dim = 800
+    if max(img.size) > max_dim:
+        scale = max_dim / max(img.size)
+        img = img.resize(
+            (int(img.width * scale), int(img.height * scale)),
+            Image.Resampling.BILINEAR,
+        )
+
+    arr = np.array(img.convert("RGB"))
+    if is_camera:
+        arr = cv2.flip(arr, 1)
+        arr = enhance_webcam_frame(arr)
+    return arr
+
+
+def detect_and_score(image_np: np.ndarray) -> dict:
+    """Run detection + emotion scoring for ALL faces in an image.
+    'boxes' = real face boxes (left to right). 'faces' = boxes, or the single fallback result."""
+    H, W = image_np.shape[:2]
+    image_bytes = image_np.tobytes()
+    results, latency, err = run_deepface_inference(image_bytes, W, H)
+
+    boxes = []
+    for r in results:
+        reg = r.get("region", {})
+        rx, ry, rw, rh = int(reg.get("x", 0)), int(reg.get("y", 0)), int(reg.get("w", 0)), int(reg.get("h", 0))
+        is_fallback = (rx == 0 and ry == 0 and rw >= W * 0.95 and rh >= H * 0.95)
+        if not is_fallback and rw >= 30 and rh >= 30:
+            boxes.append(r)
+    boxes.sort(key=lambda r: r["region"]["x"])  # number faces left to right
+
+    faces = boxes if boxes else results[:1]
+    return {
+        "image": image_np, "bytes": image_bytes, "W": W, "H": H,
+        "results": results, "boxes": boxes, "faces": faces,
+        "latency": latency, "err": err,
+    }
+
+
+def face_area(face: dict) -> int:
+    return int(face["region"]["w"]) * int(face["region"]["h"])
+
+
+def classify_emotions(emo: dict) -> dict:
+    """Turn raw emotion percentages into a label + flags (no artificial score multipliers)."""
+    total = sum(emo.values()) or 1.0
+    scores = {k: float(v) / total * 100 for k, v in emo.items()}
+
+    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
+    dom, dom_conf = ranked[0][0].lower(), float(ranked[0][1])
+    sec, sec_conf = ranked[1][0].lower(), float(ranked[1][1])
+    margin = dom_conf - sec_conf
+
+    # Gate out ambiguous / guessing predictions
+    ambiguous = dom_conf < 35 or margin < 10
+    # Two emotions nearly tied AND together dominant -> show them as a blend
+    mixed = margin < 10 and (dom_conf + sec_conf) >= 70
+
+    if mixed:
+        title = f"{dom.capitalize()} + {sec.capitalize()}"
+        emoji = EMOJI_MAP.get(dom, "") + EMOJI_MAP.get(sec, "")
+        short = f"{dom.capitalize()}+{sec.capitalize()}"
+    elif ambiguous:
+        title = "Ambiguous / Inconclusive"
+        emoji = "🤔"
+        short = "Unclear"
+    else:
+        title = dom.capitalize()
+        emoji = EMOJI_MAP.get(dom, "•")
+        short = f"{dom.capitalize()} {dom_conf:.0f}%"
+
+    mood = sum(scores.get(k, 0.0) / 100.0 * VALENCE.get(k, 0.0) for k in scores) * 100.0
+
+    return {
+        "scores": scores, "dominant": dom, "conf": dom_conf,
+        "second": sec, "second_conf": sec_conf, "margin": margin,
+        "ambiguous": ambiguous, "mixed": mixed,
+        "title": title, "emoji": emoji, "short": short, "mood": mood,
+    }
 
 
 # =============================================================================
@@ -917,7 +1021,8 @@ div[data-testid="stCameraInput"] video {{
 
 .st-key-feed_panel,
 .st-key-bars_panel,
-.st-key-coach_panel {{
+.st-key-coach_panel,
+.st-key-insights_panel {{
     background: {card_bg};
     border: 1.5px solid {capsule_border};
     box-shadow: {capsule_glow};
@@ -981,6 +1086,13 @@ div[data-testid="stExpander"] li {{
     gap: 8px;
     margin-top: 12px;
 }}
+.stat-row.four {{
+    grid-template-columns: repeat(4, 1fr);
+    margin-bottom: 12px;
+}}
+@media (max-width: 640px) {{
+    .stat-row.four {{ grid-template-columns: repeat(2, 1fr); }}
+}}
 .stat-item {{
     padding: 9px 12px;
     border-radius: 14px;
@@ -992,6 +1104,42 @@ div[data-testid="stExpander"] li {{
     font-weight: 700;
     text-transform: uppercase;
     color: {text_muted} !important;
+}}
+.stat-value {{
+    font-size: 1.05rem;
+    font-weight: 800;
+}}
+
+.chip-row {{
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 4px 0 14px 0;
+}}
+.chip {{
+    padding: 4px 12px;
+    border-radius: 9999px;
+    background: rgba(56, 189, 248, 0.08);
+    border: 1px solid {capsule_border};
+    font-size: 0.78rem;
+    font-weight: 700;
+    color: {text_main};
+}}
+
+.face-row {{
+    font-size: 0.85rem;
+    padding: 5px 0;
+    color: {text_main};
+}}
+.face-focus {{
+    font-size: 0.65rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    padding: 2px 8px;
+    border-radius: 9999px;
+    border: 1px solid {accent_tint};
+    color: {accent_tint};
+    margin-left: 6px;
 }}
 
 .chat-capsule-container {{
@@ -1375,14 +1523,34 @@ with col_btn_upload:
 # HELPER FUNCTIONS
 # =============================================================================
 
-def draw_clean_bounding(image_rgb: np.ndarray, detections: list, is_dark_mode: bool) -> np.ndarray:
+def draw_clean_bounding(
+    image_rgb: np.ndarray,
+    detections: list,
+    is_dark_mode: bool,
+    labels: list = None,
+    focus_idx: int = None,
+) -> np.ndarray:
+    """Corner-bracket boxes. If `labels` is given, each face gets its own emotion tag.
+    With several faces the tags are numbered and the focus face is drawn in an accent colour."""
     out = image_rgb.copy()
+    img_h, img_w = out.shape[:2]
     box_color = (125, 211, 252) if is_dark_mode else (2, 132, 199)
+    focus_color = (192, 132, 252) if is_dark_mode else (124, 58, 237)
+    text_color = (15, 23, 42) if is_dark_mode else (255, 255, 255)
 
-    for res in detections:
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    font_scale = max(0.5, img_w / 1100.0)
+    font_thick = 2 if font_scale >= 0.8 else 1
+    multi = len(detections) > 1
+
+    for i, res in enumerate(detections):
         x, y, w, h = (int(res["region"][k]) for k in ("x", "y", "w", "h"))
         x, y, w, h = max(0, x), max(0, y), max(1, w), max(1, h)
         L = max(int(min(w, h) * 0.18), 16)
+
+        is_focus = multi and focus_idx is not None and i == focus_idx
+        col = focus_color if is_focus else box_color
+        thick = 3 if is_focus else 2
 
         for cx, cy, dx, dy in [
             (x, y, 1, 1),
@@ -1390,8 +1558,22 @@ def draw_clean_bounding(image_rgb: np.ndarray, detections: list, is_dark_mode: b
             (x, y + h, 1, -1),
             (x + w, y + h, -1, -1),
         ]:
-            cv2.line(out, (cx, cy), (cx + dx * L, cy), box_color, 2, cv2.LINE_AA)
-            cv2.line(out, (cx, cy), (cx, cy + dy * L), box_color, 2, cv2.LINE_AA)
+            cv2.line(out, (cx, cy), (cx + dx * L, cy), col, thick, cv2.LINE_AA)
+            cv2.line(out, (cx, cy), (cx, cy + dy * L), col, thick, cv2.LINE_AA)
+
+        if labels and i < len(labels):
+            text = f"{i + 1}: {labels[i]}" if multi else labels[i]
+            (tw, th), _ = cv2.getTextSize(text, font, font_scale, font_thick)
+            pad = 5
+            bx1 = max(0, min(x, img_w - tw - 2 * pad - 1))
+            bx2 = bx1 + tw + 2 * pad
+            by2 = y - 4
+            by1 = by2 - th - 2 * pad
+            if by1 < 0:  # no room above the face: tuck the tag just inside the box
+                by1 = y + 4
+                by2 = by1 + th + 2 * pad
+            cv2.rectangle(out, (bx1, by1), (bx2, by2), col, -1)
+            cv2.putText(out, text, (bx1 + pad, by2 - pad), font, font_scale, text_color, font_thick, cv2.LINE_AA)
     return out
 
 
@@ -1621,30 +1803,140 @@ def render_live_animated_bars(scores: dict, dominant_raw: str, is_dark_mode: boo
     components.html(html_code, height=280)
 
 
+def render_session_insights(history: list, is_dark_mode: bool):
+    """Analytics panel: emotion mix, most frequent emotion, average confidence and mood trend."""
+    df = pd.DataFrame(history)
+    n = len(df)
+    emo_keys = list(EMOJI_MAP.keys())
+    emo_cols = [k.capitalize() for k in emo_keys]
+
+    # History stores percentages as strings ("12.3%"). Turn them back into numbers.
+    num = df[emo_cols].apply(
+        lambda s: pd.to_numeric(s.astype(str).str.rstrip("%"), errors="coerce")
+    ).fillna(0.0)
+
+    dominant = num.idxmax(axis=1).str.lower()
+    counts = dominant.value_counts()
+    top_emotion = str(counts.index[0])
+    top_count = int(counts.iloc[0])
+
+    conf = pd.to_numeric(df["Confidence"].astype(str).str.rstrip("%"), errors="coerce")
+    avg_conf = float(conf.mean())
+    inconclusive = int((df["Classification"] == "Ambiguous / Inconclusive").sum())
+
+    avg_scores = {k: float(num[k.capitalize()].mean()) for k in emo_keys}
+    mood = sum(num[k.capitalize()] / 100.0 * VALENCE[k] for k in emo_keys) * 100.0
+    mood = mood.reset_index(drop=True)
+
+    with st.container(key="insights_panel"):
+        st.markdown(
+            '<div style="display:flex; align-items:center; gap:8px; margin-bottom:12px;">'
+            '<span style="font-size:1.35rem;">📊</span>'
+            '<div class="ambient-glow-text" style="font-weight:800; font-size:1.15rem;">Session Insights</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown(
+            f'<div class="stat-row four">'
+            f'<div class="stat-item"><div class="stat-label">Readings</div><div class="stat-value">{n}</div></div>'
+            f'<div class="stat-item"><div class="stat-label">Most frequent</div>'
+            f'<div style="display:flex; align-items:center;">'
+            f'<span class="raw-emoji">{EMOJI_MAP.get(top_emotion, "•")}</span>'
+            f'<span class="stat-value">{top_emotion.capitalize()} ×{top_count}</span></div></div>'
+            f'<div class="stat-item"><div class="stat-label">Avg confidence</div><div class="stat-value">{avg_conf:.1f}%</div></div>'
+            f'<div class="stat-item"><div class="stat-label">Inconclusive</div><div class="stat-value">{inconclusive}</div></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        chips = "".join(
+            f'<span class="chip"><span class="raw-emoji" style="margin-right:4px !important;">{EMOJI_MAP.get(str(e), "•")}</span>'
+            f'{str(e).capitalize()} ×{int(c)}</span>'
+            for e, c in counts.items()
+        )
+        st.markdown(f'<div class="chip-row">{chips}</div>', unsafe_allow_html=True)
+
+        c_left, c_right = st.columns(2, gap="medium")
+
+        with c_left:
+            st.markdown('<div class="feed-header-title">Emotion mix (session average)</div>', unsafe_allow_html=True)
+            render_live_animated_bars(avg_scores, top_emotion, is_dark_mode)
+
+        with c_right:
+            st.markdown('<div class="feed-header-title">Mood trend</div>', unsafe_allow_html=True)
+            if n >= 2:
+                trend = pd.DataFrame(
+                    {"Mood score": mood.values},
+                    index=pd.RangeIndex(1, n + 1, name="Reading"),
+                )
+                st.line_chart(trend, height=240)
+
+                direction = ""
+                if n >= 3:
+                    change = float(np.polyfit(np.arange(n), mood.values, 1)[0]) * (n - 1)
+                    if change > 15:
+                        direction = "Overall trend: improving. "
+                    elif change < -15:
+                        direction = "Overall trend: dipping. "
+                    else:
+                        direction = "Overall trend: steady. "
+                st.caption(
+                    f"{direction}Mood score = emotion mix weighted by how pleasant each emotion is "
+                    f"(+100 very positive, -100 very negative). A rough guide only."
+                )
+            else:
+                st.info("Take at least two readings to see a mood trend.")
+
+
 # =============================================================================
 # ACTIVE VIEW CONTENT
 # =============================================================================
 
-input_image = None
-is_camera_input = False
+photos = []  # list of (file, is_camera)
 
 if st.session_state.active_mode == "live":
     _, cam_col, _ = st.columns([1, 2.4, 1])
     with cam_col:
         camera_photo = st.camera_input("Capture Portrait", label_visibility="collapsed", key="cam_input_feed")
         if camera_photo is not None:
-            input_image = camera_photo
-            is_camera_input = True
+            photos = [(camera_photo, True)]
 else:
-    uploaded_file = st.file_uploader("Upload an image (JPG, PNG)", type=["jpg", "jpeg", "png"], key="file_upload_feed")
-    if uploaded_file is not None:
-        input_image = uploaded_file
+    uploaded_files = st.file_uploader(
+        f"Upload an image (JPG, PNG). Add up to {MAX_PHOTOS} photos of the same person to average them.",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=True,
+        key="file_upload_feed",
+    )
+    if uploaded_files:
+        if len(uploaded_files) > MAX_PHOTOS:
+            st.warning(f"Only the first {MAX_PHOTOS} photos are used.")
+        photos = [(f, False) for f in uploaded_files[:MAX_PHOTOS]]
+
+# Several photos: average them (same person) or look at one photo at a time
+average_mode = False
+if len(photos) > 1:
+    view_choice = st.radio(
+        "How should these photos be used?",
+        ["🧮 Average all (same person)", "🖼️ View one photo"],
+        horizontal=True,
+        key="multi_view_mode",
+    )
+    average_mode = view_choice.startswith("🧮")
+    if not average_mode:
+        pick = st.selectbox(
+            "Photo",
+            list(range(len(photos))),
+            format_func=lambda i: f"Photo {i + 1}: {photos[i][0].name}",
+            key="single_photo_pick",
+        )
+        photos = [photos[pick]]
 
 # =============================================================================
 # INFERENCE PIPELINE
 # =============================================================================
 
-if input_image is None:
+if not photos:
     st.markdown(
         f"""
         <div style="text-align:center; padding: 35px; border-radius: 24px; border: 2px dashed {capsule_border}; box-shadow: {capsule_glow}; margin-top: 15px;">
@@ -1656,72 +1948,152 @@ if input_image is None:
         unsafe_allow_html=True,
     )
 else:
-    raw_img = Image.open(input_image)
-    raw_img = ImageOps.exif_transpose(raw_img)
+    ready = False
+    view_mode = "single"
 
-    max_dim = 800
-    if max(raw_img.size) > max_dim:
-        scale = max_dim / max(raw_img.size)
-        raw_img = raw_img.resize(
-            (int(raw_img.width * scale), int(raw_img.height * scale)),
-            Image.Resampling.BILINEAR,
-        )
+    # Filled by whichever branch runs below
+    primary_cls = None
+    img_hash = ""
+    source_label = ""
+    latency = 0.0
+    stat_items = []
+    extra_note = ""
+    rendered_frame = None
+    face_list_html = ""
+    gallery = []
+    quality_target = None  # (image, region) for photo-quality hints
 
-    image_np = np.array(raw_img.convert("RGB"))
-    if is_camera_input:
-        image_np = cv2.flip(image_np, 1)
-        image_np = enhance_webcam_frame(image_np)
+    if average_mode:
+        # ---------------- MULTI-PHOTO AVERAGING ----------------
+        per_photo = []
+        skipped = 0
+        total_latency = 0.0
 
-    H, W = image_np.shape[:2]
-    image_bytes = image_np.tobytes()
-    results, latency, err_msg = run_deepface_inference(image_bytes, W, H)
+        for n_idx, (f_obj, is_cam) in enumerate(photos):
+            img = load_rgb(f_obj, is_cam)
+            d = detect_and_score(img)
+            total_latency += d["latency"]
+            if d["err"] or not d["faces"]:
+                skipped += 1
+                continue
+            face = max(d["faces"], key=face_area)  # same person: use the largest face
+            per_photo.append({
+                "idx": n_idx + 1,
+                "image": img,
+                "bytes": d["bytes"],
+                "face": face,
+                "boxed": bool(d["boxes"]),
+                "cls": classify_emotions(face["emotion"]),
+            })
 
-    if err_msg:
-        st.error(f"Inference Alert: {err_msg}")
-    elif not results:
-        st.warning("No face clearly recognized. Center your face in good lighting and retake.")
-    else:
-        boxes = []
-        for r in results:
-            reg = r.get("region", {})
-            rx, ry, rw, rh = int(reg.get("x", 0)), int(reg.get("y", 0)), int(reg.get("w", 0)), int(reg.get("h", 0))
-            is_fallback = (rx == 0 and ry == 0 and rw >= W * 0.95 and rh >= H * 0.95)
-            if not is_fallback and rw >= 30 and rh >= 30:
-                boxes.append(r)
-
-        res_primary = boxes[0] if boxes else results[0]
-
-        # Photo quality hints (blur, darkness, small face, uneven light)
-        for note in assess_quality(image_np, res_primary["region"]):
-            st.info(note)
-
-        # -----------------------------------------------------------------
-        # SCORES & AMBIGUITY GATING (no artificial score multipliers)
-        # -----------------------------------------------------------------
-        calibrated_emotions = {k: float(v) for k, v in res_primary["emotion"].items()}
-        total = sum(calibrated_emotions.values()) or 1.0
-        calibrated_emotions = {k: v / total * 100 for k, v in calibrated_emotions.items()}
-
-        ranked = sorted(calibrated_emotions.items(), key=lambda kv: kv[1], reverse=True)
-        dominant_label, dominant_conf = ranked[0][0].lower(), float(ranked[0][1])
-        runner_up_conf = float(ranked[1][1])
-        second_label = ranked[1][0].capitalize()
-        margin = dominant_conf - runner_up_conf
-
-        # Gate out ambiguous / guessing predictions
-        is_ambiguous = dominant_conf < 35 or margin < 10
-
-        # Two emotions nearly tied AND together dominant -> show them as a blend
-        is_mixed = margin < 10 and (dominant_conf + runner_up_conf) >= 70
-        if is_mixed:
-            classification_title = f"{dominant_label.capitalize()} + {second_label}"
-            classification_emoji = EMOJI_MAP.get(dominant_label, "") + EMOJI_MAP.get(second_label.lower(), "")
-        elif is_ambiguous:
-            classification_title = "Ambiguous / Inconclusive"
-            classification_emoji = "🤔"
+        if not per_photo:
+            st.error("Inference Alert: No clear face found in any of the photos. Use well-lit photos facing the camera.")
         else:
-            classification_title = dominant_label.capitalize()
-            classification_emoji = EMOJI_MAP.get(dominant_label, "•")
+            ready = True
+            view_mode = "average"
+            k = len(per_photo)
+
+            if skipped:
+                st.warning(f"{skipped} of {len(photos)} photos had no readable face and were skipped.")
+
+            avg_scores = {
+                e: float(np.mean([p["cls"]["scores"][e] for p in per_photo]))
+                for e in EMOJI_MAP
+            }
+            primary_cls = classify_emotions(avg_scores)
+            agree = sum(1 for p in per_photo if p["cls"]["dominant"] == primary_cls["dominant"])
+
+            img_hash = hashlib.md5(
+                "".join(hashlib.md5(p["bytes"]).hexdigest() for p in per_photo).encode()
+            ).hexdigest()
+            source_label = f"Average of {k} photos"
+            latency = total_latency
+            extra_note = f"Averaged over {k} photo{'s' if k != 1 else ''}: {agree}/{k} agree on {primary_cls['dominant']}"
+            stat_items = [
+                ("Photos used", f"{k}/{len(photos)}"),
+                ("Latency", f"{latency:.0f} ms"),
+                ("Agreement", f"{agree}/{k}"),
+            ]
+            for p in per_photo:
+                frame = draw_clean_bounding(
+                    p["image"], [p["face"]] if p["boxed"] else [], is_dark, [p["cls"]["short"]]
+                )
+                gallery.append((frame, f"Photo {p['idx']}: {p['cls']['short']}"))
+            biggest = max(per_photo, key=lambda p: face_area(p["face"]))
+            quality_target = (biggest["image"], biggest["face"]["region"])
+
+    else:
+        # ---------------- SINGLE PHOTO (ONE OR MANY FACES) ----------------
+        file_obj, is_cam = photos[0]
+        image_np = load_rgb(file_obj, is_cam)
+        d = detect_and_score(image_np)
+
+        if d["err"]:
+            st.error(f"Inference Alert: {d['err']}")
+        elif not d["faces"]:
+            st.warning("No face clearly recognized. Center your face in good lighting and retake.")
+        else:
+            ready = True
+            faces = d["faces"]
+            face_cls = [classify_emotions(f["emotion"]) for f in faces]
+            img_hash = hashlib.md5(d["bytes"]).hexdigest()
+
+            focus_idx = int(np.argmax([face_area(f) for f in faces]))
+            if len(faces) > 1:
+                focus_idx = st.selectbox(
+                    "🎯 Focus face (drives the coach, history and bars)",
+                    list(range(len(faces))),
+                    index=focus_idx,
+                    format_func=lambda i: f"Face {i + 1}: {face_cls[i]['short']}",
+                    key=f"focus_{img_hash[:8]}",
+                )
+
+            primary_cls = face_cls[focus_idx]
+            latency = d["latency"]
+            labels = [c["short"] for c in face_cls] if len(faces) > 1 else None
+            rendered_frame = (
+                draw_clean_bounding(image_np, d["boxes"], is_dark, labels, focus_idx)
+                if d["boxes"] else image_np
+            )
+
+            if len(faces) > 1:
+                source_label = f"Group photo ({len(faces)} faces, face {focus_idx + 1})"
+                face_list_html = "".join(
+                    f'<div class="face-row"><span class="raw-emoji">{c["emoji"]}</span>'
+                    f'<strong>Face {i + 1}</strong>: {c["title"]} ({c["conf"]:.0f}%)'
+                    + ('<span class="face-focus">focus</span>' if i == focus_idx else "")
+                    + '</div>'
+                    for i, c in enumerate(face_cls)
+                )
+            else:
+                source_label = "Single photo"
+
+            num_faces_label = str(len(d["boxes"])) if d["boxes"] else "1 (Portrait)"
+            stat_items = [
+                ("Faces", num_faces_label),
+                ("Latency", f"{latency:.0f} ms"),
+                ("Resolution", f"{d['W']}x{d['H']}"),
+            ]
+            quality_target = (image_np, faces[focus_idx]["region"])
+
+    # ---------------------------------------------------------------------
+    # RESULTS
+    # ---------------------------------------------------------------------
+    if ready:
+        # Photo quality hints (blur, darkness, small face, uneven light)
+        if quality_target is not None:
+            for note in assess_quality(quality_target[0], quality_target[1]):
+                st.info(note)
+
+        calibrated_emotions = primary_cls["scores"]
+        dominant_label = primary_cls["dominant"]
+        dominant_conf = primary_cls["conf"]
+        second_label = primary_cls["second"].capitalize()
+        runner_up_conf = primary_cls["second_conf"]
+        is_ambiguous = primary_cls["ambiguous"]
+        is_mixed = primary_cls["mixed"]
+        classification_title = primary_cls["title"]
+        classification_emoji = primary_cls["emoji"]
 
         # Short description of the camera read, passed to the coach as a soft hint
         emotion_context = (
@@ -1729,17 +2101,29 @@ else:
             + (" (mixed or unclear)" if is_ambiguous else "")
         )
 
-        img_hash = hashlib.md5(image_bytes).hexdigest()
-        if st.session_state.cached_analysis != img_hash:
-            st.session_state.cached_analysis = img_hash
-            display_title = classification_title
-            st.session_state.history.append({
+        # Log to session history (one row per reading). Changing the focus face
+        # of the same photo updates that row instead of adding a new one.
+        cache_key = f"{img_hash}|{source_label}"
+        if st.session_state.cached_analysis != cache_key:
+            same_photo = (
+                st.session_state.cached_analysis is not None
+                and st.session_state.cached_analysis.split("|")[0] == img_hash
+                and len(st.session_state.history) > 0
+            )
+            st.session_state.cached_analysis = cache_key
+            entry = {
                 "Timestamp": time.strftime("%H:%M:%S"),
-                "Classification": display_title,
+                "Classification": classification_title,
                 "Confidence": f"{dominant_conf:.1f}%",
                 "User_Reflection": "None",
+                "Source": source_label,
                 **{k.capitalize(): f"{float(v):.1f}%" for k, v in calibrated_emotions.items()},
-            })
+            }
+            if same_photo:
+                entry["User_Reflection"] = st.session_state.history[-1].get("User_Reflection", "None")
+                st.session_state.history[-1] = entry
+            else:
+                st.session_state.history.append(entry)
 
             if st.session_state.last_emotion_seen != dominant_label:
                 st.session_state.last_emotion_seen = dominant_label
@@ -1749,8 +2133,6 @@ else:
                     )}
                 ]
 
-        rendered_frame = draw_clean_bounding(image_np, boxes, is_dark) if boxes else image_np
-
         # -------------------------------------------------------------
         # 1. OPTICAL FEED & GRAPH
         # -------------------------------------------------------------
@@ -1758,35 +2140,51 @@ else:
 
         with col_img:
             with st.container(key="feed_panel"):
-                st.markdown(
-                    '<div class="feed-header-title">Optical Feed Result</div>',
-                    unsafe_allow_html=True,
+                if view_mode == "average":
+                    st.markdown(
+                        '<div class="feed-header-title">Photos Used (largest face in each)</div>',
+                        unsafe_allow_html=True,
+                    )
+                    per_row = 3
+                    for start in range(0, len(gallery), per_row):
+                        row_items = gallery[start:start + per_row]
+                        g_cols = st.columns(per_row)
+                        for g_col, (frame, cap) in zip(g_cols, row_items):
+                            with g_col:
+                                st.image(frame, caption=cap, use_container_width=True)
+                else:
+                    st.markdown(
+                        '<div class="feed-header-title">Optical Feed Result</div>',
+                        unsafe_allow_html=True,
+                    )
+                    st.image(rendered_frame, use_container_width=True)
+                    if face_list_html:
+                        st.markdown(face_list_html, unsafe_allow_html=True)
+
+                stat_html = "".join(
+                    f'<div class="stat-item"><div class="stat-label">{lbl}</div><div class="stat-value">{val}</div></div>'
+                    for lbl, val in stat_items
                 )
-                st.image(rendered_frame, use_container_width=True)
-                num_faces_label = str(len(boxes)) if boxes else "1 (Portrait)"
-                st.markdown(
-                    f"""
-                    <div class="stat-row">
-                        <div class="stat-item"><div class="stat-label">Faces</div><div class="stat-value">{num_faces_label}</div></div>
-                        <div class="stat-item"><div class="stat-label">Latency</div><div class="stat-value">{latency:.0f} ms</div></div>
-                        <div class="stat-item"><div class="stat-label">Resolution</div><div class="stat-value">{W}x{H}</div></div>
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
+                st.markdown(f'<div class="stat-row">{stat_html}</div>', unsafe_allow_html=True)
 
         with col_graph:
             display_title = classification_title
             display_emoji = classification_emoji
 
-            # Hide the runner-up line when it is basically zero (under 5%).
-            # Never leave a blank line here: a blank line would break the HTML block in markdown.
-            also_html = (
-                f'<div style="font-size:0.78rem; color:{text_muted}; margin-top:4px;">'
-                f'Also detected: {second_label} ({runner_up_conf:.1f}%)</div>'
-                if runner_up_conf >= 5
-                else "<div></div>"
-            )
+            # Extra info lines under the badge. Hide the runner-up line when it is basically
+            # zero (under 5%). Never leave a blank line here: a blank line would break the
+            # HTML block in markdown.
+            also_parts = []
+            if runner_up_conf >= 5:
+                also_parts.append(
+                    f'<div style="font-size:0.78rem; color:{text_muted}; margin-top:4px;">'
+                    f'Also detected: {second_label} ({runner_up_conf:.1f}%)</div>'
+                )
+            if extra_note:
+                also_parts.append(
+                    f'<div style="font-size:0.78rem; color:{text_muted}; margin-top:4px;">{html_lib.escape(extra_note)}</div>'
+                )
+            also_html = "".join(also_parts) if also_parts else "<div></div>"
 
             st.markdown(
                 f"""
@@ -1915,11 +2313,14 @@ else:
 
 
 # =============================================================================
-# SESSION HISTORY
+# SESSION INSIGHTS + HISTORY
 # =============================================================================
 
 if len(st.session_state.history) > 0:
     st.markdown("---")
+
+    render_session_insights(st.session_state.history, is_dark)
+
     col_title, col_actions = st.columns([2.4, 2.6])
     with col_title:
         st.markdown('<div class="session-title ambient-glow-text">Session Expression History</div>', unsafe_allow_html=True)
@@ -1956,6 +2357,8 @@ if len(st.session_state.history) > 0:
         classification = item["Classification"]
         reflection = item.get("User_Reflection", "None")
         emoji = EMOJI_MAP.get(classification.lower().split(" ")[0], "🤔")
+        source_txt = item.get("Source", "")
+        time_line = item["Timestamp"] + (f" · {html_lib.escape(source_txt)}" if source_txt else "")
         reflection_markup = (
             f'<div style="font-size:0.75rem; color:{accent_tint}; margin-top:2px;">Check-In: "{html_lib.escape(reflection)}"</div>'
             if reflection != "None"
@@ -1967,7 +2370,7 @@ if len(st.session_state.history) > 0:
             f'<span class="raw-emoji" style="font-size:1.3rem;">{emoji}</span>'
             f'<div>'
             f'<div class="ambient-glow-text" style="font-weight:800; font-size:0.92rem;">{classification}</div>'
-            f'<div style="font-size:0.7rem; color:#94A3B8;">{item["Timestamp"]}</div>'
+            f'<div style="font-size:0.7rem; color:#94A3B8;">{time_line}</div>'
             f'{reflection_markup}'
             f'</div>'
             f'</div>'
