@@ -2,6 +2,8 @@ import time
 import json
 import os
 import hashlib
+import html as html_lib
+import re
 import streamlit as st
 import streamlit.components.v1 as components
 from PIL import Image, ImageOps
@@ -263,85 +265,287 @@ def assess_quality(rgb: np.ndarray, region: dict) -> list:
 # GROUNDED MENTAL WELLNESS COACH ENGINE
 # =============================================================================
 
-def get_initial_ai_greeting(emotion: str, conf: float) -> str:
+# --- Safety: crisis language is handled by a fixed, caring message (no AI guesswork) ---
+
+CRISIS_REGEX = re.compile(
+    r"(suicid\w*|kill(ing)? myself|end(ing)? my life|end it all|want(ed)? to die|wanna die|"
+    r"don'?t want to (live|be here|exist)|no reason to live|better off (dead|without me)|"
+    r"(hurt|harm|cut|cutting|hurting|harming) myself|self[- ]?harm|take my own life)",
+    re.IGNORECASE,
+)
+
+CRISIS_REPLY = (
+    "💙 I'm really glad you told me, and I'm taking it seriously. You don't have to carry this alone, "
+    "and you deserve support from a real person right now.\n"
+    "If you might act on these thoughts, please call your local emergency number (112 in India) or go to "
+    "the nearest hospital, and try not to be alone. Reach out to a friend, a family member or someone you trust.\n"
+    "In India, Tele-MANAS is free, confidential and open 24x7: call 14416 or 1-800-891-4416. "
+    "Elsewhere, findahelpline.com lists free helplines by country.\n"
+    "I'm an app, not a counsellor, but I'm here to keep talking with you too."
+)
+
+COACH_NOTE = (
+    "Reflective check-in, not therapy or medical advice. Camera emotion reads are rough guesses, "
+    "so your own words matter more. Photos are processed in memory and not saved by this app. "
+    "If a Gemini key is set, only your typed messages (never your photo) are sent to Google Gemini. "
+    "If things feel too heavy: Tele-MANAS (India) 14416, free and 24x7, or findahelpline.com for other countries."
+)
+
+
+def is_crisis_message(text: str) -> bool:
+    return bool(CRISIS_REGEX.search(text or ""))
+
+
+def render_chat_html(text: str) -> str:
+    """Escape user / AI text before it goes into HTML, keep line breaks and **bold**."""
+    safe = html_lib.escape(str(text))
+    safe = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", safe)
+    return safe.replace("\n", "<br>")
+
+
+# --- Quick resets shown in the "1-minute reset" drawer ---
+
+EMOTION_RESETS = {
+    "happy": ("✨ Lock in the win", [
+        "Name one thing that went well today.",
+        "Tell one person about it, since shared joy lasts longer.",
+        "Note what helped, so you can repeat it on a harder day.",
+    ]),
+    "sad": ("🌧️ Be gentle with yourself", [
+        "Put a hand on your chest and take five slow breaths.",
+        "Say to yourself what you'd say to a friend feeling this way.",
+        "Message or sit near one person you trust, even for five minutes.",
+        "Pick one tiny task (water, fresh air) and stop there.",
+    ]),
+    "angry": ("🔥 Cool the heat", [
+        "Unclench your jaw and drop your shoulders.",
+        "Breathe in for 4, out for 6, five rounds.",
+        "Write the problem in one sentence, then what you actually want from it.",
+        "If you can, walk for 5 minutes before replying to anyone.",
+    ]),
+    "fear": ("🫧 5-4-3-2-1 grounding", [
+        "Notice 5 things you can see.",
+        "Notice 4 things you can touch.",
+        "Notice 3 things you can hear.",
+        "Notice 2 things you can smell.",
+        "Notice 1 thing you can taste, then take a slow breath.",
+    ]),
+    "disgust": ("🌿 Reset your space", [
+        "Step away from whatever feels off, even for a minute.",
+        "Splash water on your face or change your surroundings.",
+        "Name exactly what bothered you: a value, a behaviour, a smell?",
+        "Decide: fix it, avoid it, or let it go.",
+    ]),
+    "surprise": ("⚡ Land after the jolt", [
+        "Pause. You don't have to react instantly.",
+        "Take three slow breaths.",
+        "Ask yourself: is this good, bad, or just new?",
+        "Choose only the next small step.",
+    ]),
+    "neutral": ("🧘 Use the calm", [
+        "Do a quick body scan: forehead, jaw, shoulders, hands.",
+        "Decide your one priority for the next hour.",
+        "Drink some water and stretch for a minute.",
+    ]),
+}
+
+# "box" = in 4, hold 4, out 4, hold 4   |   "relax" = in 4, out 6 (long exhale calms the body)
+BREATHING_PATTERN = {
+    "angry": "relax", "fear": "relax", "sad": "relax", "disgust": "relax",
+    "surprise": "box", "neutral": "box", "happy": "box",
+}
+
+
+def render_breathing_widget(pattern: str, is_dark_mode: bool):
+    """Animated breathing orb in the app's ambient colours."""
+    if pattern == "box":
+        phases = [["Breathe in", 4, 1.0], ["Hold", 4, 1.0], ["Breathe out", 4, 0.55], ["Hold", 4, 0.55]]
+    else:
+        phases = [["Breathe in", 4, 1.0], ["Breathe out", 6, 0.55]]
+    payload = json.dumps(phases)
+    text_color = "#FFFFFF" if is_dark_mode else "#0F172A"
+
+    html_code = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+    <style>
+      * {{ margin: 0; padding: 0; box-sizing: border-box;
+           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }}
+      body {{
+        background: transparent; color: {text_color};
+        display: flex; flex-direction: column; align-items: center; justify-content: center;
+        height: 100vh; overflow: hidden;
+      }}
+      .stage {{ position: relative; width: 150px; height: 150px; display: flex; align-items: center; justify-content: center; }}
+      .ring {{ position: absolute; inset: 0; border-radius: 50%; border: 1.5px solid rgba(56, 189, 248, 0.5); }}
+      .orb {{
+        width: 150px; height: 150px; border-radius: 50%;
+        background: radial-gradient(circle at 35% 30%, rgba(255,255,255,0.85), rgba(56,189,248,0.55) 45%, rgba(192,132,252,0.5) 80%);
+        box-shadow: 0 0 30px rgba(56, 189, 248, 0.55), inset 0 0 18px rgba(255, 255, 255, 0.35);
+        transform: scale(0.55);
+      }}
+      .label {{ margin-top: 10px; font-weight: 800; font-size: 1.05rem; }}
+      .count {{ font-size: 0.85rem; opacity: 0.75; margin-top: 2px; font-variant-numeric: tabular-nums; }}
+    </style>
+    </head>
+    <body>
+      <div class="stage"><div class="ring"></div><div class="orb" id="orb"></div></div>
+      <div class="label" id="label">Get comfortable...</div>
+      <div class="count" id="count">&nbsp;</div>
+      <script>
+        const phases = {payload};
+        const orb = document.getElementById("orb");
+        const label = document.getElementById("label");
+        const count = document.getElementById("count");
+        const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+        async function run() {{
+          await sleep(600);
+          while (true) {{
+            for (const [name, secs, scale] of phases) {{
+              label.textContent = name;
+              orb.style.transition = "transform " + secs + "s ease-in-out";
+              orb.style.transform = "scale(" + scale + ")";
+              for (let t = secs; t >= 1; t--) {{
+                count.textContent = t;
+                await sleep(1000);
+              }}
+            }}
+          }}
+        }}
+        run();
+      </script>
+    </body>
+    </html>
+    """
+    components.html(html_code, height=240)
+
+
+def get_initial_ai_greeting(
+    emotion: str,
+    conf: float,
+    second: str = None,
+    second_conf: float = 0.0,
+    mixed: bool = False,
+    ambiguous: bool = False,
+) -> str:
     dom = emotion.lower()
+    if mixed and second:
+        return (
+            f"🍃 Your expression looks like a mix of {dom} ({conf:.0f}%) and {second} ({second_conf:.0f}%). "
+            f"A camera can only guess, and you know best. In your own words, how are you actually feeling right now?"
+        )
+    if ambiguous:
+        return (
+            "🫧 Your expression is hard to read right now, and that's completely fine. "
+            "A camera can only guess. How are you actually feeling at this moment?"
+        )
     if dom == "happy":
         return (
-            f"🌿 I notice that clarity and genuine ease on your face ({conf:.1f}% confidence). "
-            f"Hold onto this feeling without rushing past it. What went well today? "
-            f"Acknowledge the win—you earned this moment of peace."
+            f"🌿 You look genuinely at ease ({conf:.0f}% match). Hold onto this feeling without rushing past it. "
+            f"What went well today?"
         )
     elif dom in ["sad", "fear"]:
         return (
-            f"💙 I sense the heaviness and tension you're holding ({conf:.1f}% confidence). "
-            f"Before trying to fix or solve anything, let your shoulders drop and unclamp your jaw. "
-            f"What is weighing on your mind right now? I'm here to hold space for you."
+            f"💙 Your expression looks heavy or tense ({conf:.0f}% match). Before fixing anything, let your shoulders "
+            f"drop and unclench your jaw. What's weighing on your mind right now? I'm here to listen."
         )
     elif dom == "angry":
         return (
-            f"🔥 I can see the frustration and pressure in your expression ({conf:.1f}% confidence). "
-            f"Your anger is valid—it usually signals a boundary was crossed or friction is high. "
-            f"Take one slow, measured breath with me. What triggered this friction?"
+            f"🔥 I can see some tension and frustration in your expression ({conf:.0f}% match). That's valid, "
+            f"since it often means something crossed a boundary. Take one slow breath with me. What's causing the friction?"
         )
     elif dom == "disgust":
         return (
-            f"🌧️ I notice that resistance and recoil ({conf:.1f}% confidence). "
-            f"When something clashes with our principles or comfort, our body reacts immediately. "
-            f"What just crossed your path that felt so off?"
+            f"🌧️ Your expression looks like recoil or resistance ({conf:.0f}% match). Something may feel off to you. "
+            f"What just crossed your path?"
         )
     elif dom == "surprise":
         return (
-            f"⚡ That looks like an unexpected jolt to your system ({conf:.1f}% confidence). "
-            f"Give your mind a moment to catch up to the change. What caught you off balance?"
+            f"⚡ You look caught off guard ({conf:.0f}% match). Give your mind a moment to catch up. "
+            f"What took you by surprise?"
         )
     else:
         return (
-            f"🍃 You appear centered and composed ({conf:.1f}% confidence). "
-            f"A quiet mind is a powerful anchor. How is your internal battery feeling right now?"
+            f"🍃 You look calm and composed ({conf:.0f}% match). A quiet mind is a good anchor. "
+            f"How is your energy right now?"
         )
 
 
-def generate_companion_reply(user_text: str, current_emotion: str) -> str:
+def generate_companion_reply(
+    user_text: str,
+    current_emotion: str,
+    history: list = None,
+    emotion_context: str = "",
+) -> str:
+    # 1) Safety first: fixed, caring response, no AI involved
+    if is_crisis_message(user_text):
+        return CRISIS_REPLY
+
     api_key = os.environ.get("GEMINI_API_KEY")
+    context_line = emotion_context or current_emotion
     system_prompt = (
-        "You are 'The Grounded Mental Wellness Coach'—a mindful, calming, emotionally steady mentor. "
-        "You are NOT a corporate assistant or robotic chatbot. "
-        "Your tone is authentic, grounded, psychologically attuned, and compassionate without toxic positivity. "
-        f"The user's camera currently reflects their expression as: '{current_emotion}'. "
+        "You are 'The Grounded Mental Wellness Coach', a calm, warm, emotionally steady companion inside a student "
+        "project app. You are NOT a therapist: never diagnose, never label disorders, never give medical advice. "
+        f"The camera made a rough, unreliable guess about the user's facial expression: {context_line}. "
+        "Treat it as a gentle hint, never as fact. If the user says something different, believe them. "
         "GUIDELINES:\n"
-        "- Acknowledge their specific subject or situation directly (e.g., college studies, syllabus topics like WSN, burnout, personal wins).\n"
-        "- Validate their state, remind them to breathe or check their physical tension when stressed, and offer grounded, sustainable perspective.\n"
-        "- Keep responses concise (2 to 3 calm, impactful sentences).\n"
-        "- Never use clinical jargon or customer-service phrases like 'How can I assist you today?'."
+        "- Reply in 2 to 4 short sentences, in plain text with no lists.\n"
+        "- Reflect what they actually said in your own words; acknowledge specifics (studies, exams, burnout, wins).\n"
+        "- Offer at most ONE small, concrete suggestion when it fits (a slow breath, a short break, writing one line "
+        "down, talking to someone you trust).\n"
+        "- End with at most one gentle, open question.\n"
+        "- No toxic positivity, no clinical jargon, no customer-service phrases like 'How can I assist you today?'. "
+        "Use 0 or 1 emoji.\n"
+        "- If they mention self-harm or not wanting to live, respond with care and encourage reaching a trusted "
+        "person, a local emergency number or a helpline."
     )
 
     if api_key:
+        # Conversation memory: last 8 turns, must start with a user turn
+        turns = []
+        for m in (history or [])[-8:]:
+            turns.append({"role": "user" if m["role"] == "user" else "model", "text": m["content"]})
+        while turns and turns[0]["role"] != "user":
+            turns.pop(0)
+        turns.append({"role": "user", "text": user_text})
+
+        model_names = [os.environ.get("GEMINI_MODEL", "").strip() or "gemini-2.5-flash", "gemini-2.0-flash"]
+
         try:
             from google import genai
             client = genai.Client(api_key=api_key)
-            resp = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=user_text,
-                config={"system_instruction": system_prompt},
-            )
-            if resp and resp.text:
-                return resp.text.strip()
+            contents = [{"role": t["role"], "parts": [{"text": t["text"]}]} for t in turns]
+            for name in model_names:
+                try:
+                    resp = client.models.generate_content(
+                        model=name,
+                        contents=contents,
+                        config={"system_instruction": system_prompt, "temperature": 0.7},
+                    )
+                    if resp and resp.text:
+                        return resp.text.strip()
+                except Exception:
+                    continue
         except Exception:
             pass
 
         try:
             import google.generativeai as legacy_genai
             legacy_genai.configure(api_key=api_key)
+            legacy_contents = [{"role": t["role"], "parts": [t["text"]]} for t in turns]
             model = legacy_genai.GenerativeModel(
                 model_name="gemini-1.5-flash",
                 system_instruction=system_prompt,
             )
-            resp = model.generate_content(user_text)
+            resp = model.generate_content(legacy_contents)
             if resp and resp.text:
                 return resp.text.strip()
         except Exception:
             pass
 
+    # 2) Offline fallback (no key / API error): simple, safe rule-based replies
     txt = user_text.lower().strip()
     dom = current_emotion.lower()
 
@@ -365,7 +569,7 @@ def generate_companion_reply(user_text: str, current_emotion: str) -> str:
         return "Remember that an exam is only an assessment of a snapshot in time, not a measurement of your intellect or capability. Focus only on the step right in front of you today. 💙"
 
     if any(w in txt for w in ["alone", "lonely", "nobody", "friend", "worth"]):
-        return "Isolation makes problems feel deceptively permanent, but you are not alone in this moment. Treat yourself with the same gentleness you would offer a close friend navigating the dark. 🫂"
+        return "Isolation makes problems feel deceptively permanent, but you are not alone in this moment. Treat yourself with the same gentleness you would offer a close friend navigating the dark. If it keeps feeling this heavy, talking to a counsellor or someone you trust can really help. 🫂"
 
     if dom == "happy":
         return "I love seeing you in this space of ease. Notice what contributed to this clarity so you can return to it when future days get noisy. 🌿🎈"
@@ -725,6 +929,22 @@ div[data-testid="stCameraInput"] video {{
 }}
 .st-key-coach_panel {{
     padding: 20px 24px;
+}}
+
+div[data-testid="stExpander"] {{
+    border: 1.5px solid {capsule_border} !important;
+    border-radius: 18px !important;
+    background: transparent !important;
+    margin-top: 10px;
+}}
+div[data-testid="stExpander"] summary,
+div[data-testid="stExpander"] summary p {{
+    color: {text_main} !important;
+    font-weight: 700 !important;
+}}
+div[data-testid="stExpander"] p,
+div[data-testid="stExpander"] li {{
+    color: {text_main} !important;
 }}
 
 .clean-panel {{
@@ -1503,6 +1723,12 @@ else:
             classification_title = dominant_label.capitalize()
             classification_emoji = EMOJI_MAP.get(dominant_label, "•")
 
+        # Short description of the camera read, passed to the coach as a soft hint
+        emotion_context = (
+            f"{dominant_label} {dominant_conf:.0f}%, then {second_label.lower()} {runner_up_conf:.0f}%"
+            + (" (mixed or unclear)" if is_ambiguous else "")
+        )
+
         img_hash = hashlib.md5(image_bytes).hexdigest()
         if st.session_state.cached_analysis != img_hash:
             st.session_state.cached_analysis = img_hash
@@ -1518,7 +1744,9 @@ else:
             if st.session_state.last_emotion_seen != dominant_label:
                 st.session_state.last_emotion_seen = dominant_label
                 st.session_state.chat_messages = [
-                    {"role": "ai", "content": get_initial_ai_greeting(dominant_label, dominant_conf)}
+                    {"role": "ai", "content": get_initial_ai_greeting(
+                        dominant_label, dominant_conf, second_label.lower(), runner_up_conf, is_mixed, is_ambiguous
+                    )}
                 ]
 
         rendered_frame = draw_clean_bounding(image_np, boxes, is_dark) if boxes else image_np
@@ -1599,12 +1827,12 @@ else:
             for msg in st.session_state.chat_messages:
                 if msg["role"] == "ai":
                     st.markdown(
-                        f'<div class="chat-bubble-ai"><strong>Coach:</strong> {msg["content"]}</div>',
+                        f'<div class="chat-bubble-ai"><strong>Coach:</strong> {render_chat_html(msg["content"])}</div>',
                         unsafe_allow_html=True,
                     )
                 else:
                     st.markdown(
-                        f'<div class="chat-bubble-user"><strong>You:</strong> {msg["content"]}</div>',
+                        f'<div class="chat-bubble-user"><strong>You:</strong> {render_chat_html(msg["content"])}</div>',
                         unsafe_allow_html=True,
                     )
 
@@ -1626,7 +1854,12 @@ else:
                 st.session_state.chat_messages.append({"role": "user", "content": selected_preset})
                 if len(st.session_state.history) > 0:
                     st.session_state.history[-1]["User_Reflection"] = selected_preset
-                bot_reply = generate_companion_reply(selected_preset, dominant_label)
+                bot_reply = generate_companion_reply(
+                    selected_preset,
+                    dominant_label,
+                    history=st.session_state.chat_messages[:-1],
+                    emotion_context=emotion_context,
+                )
                 st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
                 if dominant_label in ["happy", "surprise"]:
                     st.session_state.trigger_celebration = True
@@ -1646,13 +1879,32 @@ else:
                         text_to_send = user_chat_text.strip()
                         if text_to_send:
                             st.session_state.chat_messages.append({"role": "user", "content": text_to_send})
+                            crisis_flag = is_crisis_message(text_to_send)
                             if len(st.session_state.history) > 0:
-                                st.session_state.history[-1]["User_Reflection"] = text_to_send
-                            bot_reply = generate_companion_reply(text_to_send, dominant_label)
+                                st.session_state.history[-1]["User_Reflection"] = (
+                                    "[private message]" if crisis_flag else text_to_send
+                                )
+                            bot_reply = generate_companion_reply(
+                                text_to_send,
+                                dominant_label,
+                                history=st.session_state.chat_messages[:-1],
+                                emotion_context=emotion_context,
+                            )
                             st.session_state.chat_messages.append({"role": "ai", "content": bot_reply})
-                            if dominant_label in ["happy", "surprise"]:
+                            if dominant_label in ["happy", "surprise"] and not crisis_flag:
                                 st.session_state.trigger_celebration = True
                             st.rerun()
+
+            with st.expander("🧰 1-minute reset for this moment"):
+                reset_title, reset_steps = EMOTION_RESETS.get(dominant_label, EMOTION_RESETS["neutral"])
+                st.markdown(f"**{reset_title}**")
+                st.markdown("\n".join(f"{i}. {step}" for i, step in enumerate(reset_steps, 1)))
+                render_breathing_widget(BREATHING_PATTERN.get(dominant_label, "box"), is_dark)
+
+            st.markdown(
+                f'<div style="font-size:0.72rem; color:{text_muted}; margin-top:10px; line-height:1.5;">{COACH_NOTE}</div>',
+                unsafe_allow_html=True,
+            )
 
 
 # =============================================================================
@@ -1683,12 +1935,22 @@ if len(st.session_state.history) > 0:
                 st.session_state.last_emotion_seen = None
                 st.rerun()
 
+    timeline = " → ".join(
+        EMOJI_MAP.get(h["Classification"].lower().split(" ")[0], "🤔")
+        for h in st.session_state.history[-10:]
+    )
+    st.markdown(
+        f'<div style="margin: 6px 0 12px 0; font-size:0.8rem; color:{text_muted}; font-weight:700;">'
+        f'Mood timeline: <span class="raw-emoji" style="font-size:1.15rem;">{timeline}</span></div>',
+        unsafe_allow_html=True,
+    )
+
     for item in st.session_state.history[-5:][::-1]:
         classification = item["Classification"]
         reflection = item.get("User_Reflection", "None")
         emoji = EMOJI_MAP.get(classification.lower().split(" ")[0], "🤔")
         reflection_markup = (
-            f'<div style="font-size:0.75rem; color:{accent_tint}; margin-top:2px;">Check-In: "{reflection}"</div>'
+            f'<div style="font-size:0.75rem; color:{accent_tint}; margin-top:2px;">Check-In: "{html_lib.escape(reflection)}"</div>'
             if reflection != "None"
             else ""
         )
