@@ -1779,6 +1779,15 @@ else:
             display_title = classification_title
             display_emoji = classification_emoji
 
+            # Hide the runner-up line when it is basically zero (under 5%).
+            # Never leave a blank line here: a blank line would break the HTML block in markdown.
+            also_html = (
+                f'<div style="font-size:0.78rem; color:{text_muted}; margin-top:4px;">'
+                f'Also detected: {second_label} ({runner_up_conf:.1f}%)</div>'
+                if runner_up_conf >= 5
+                else "<div></div>"
+            )
+
             st.markdown(
                 f"""
                 <div class="metric-badge">
@@ -1790,9 +1799,7 @@ else:
                         <span class="shimmer-txt">{display_title}</span>
                         <span class="shimmer-txt" style="font-size:0.95rem; font-weight:700;">({dominant_conf:.1f}%)</span>
                     </div>
-                    <div style="font-size:0.78rem; color:{text_muted}; margin-top:4px;">
-                        Also detected: {second_label} ({runner_up_conf:.1f}%)
-                    </div>
+                    {also_html}
                     <div style="height: 8px; width: 100%; background: rgba(51, 65, 85, 0.6); border-radius: 999px; overflow: hidden; margin-top: 12px; border: 1px solid rgba(56, 189, 248, 0.2);">
                         <div style="height: 100%; width: {min(dominant_conf, 100):.1f}%; background: linear-gradient(90deg, #0284C7, {accent_tint}); border-radius: 999px; box-shadow: 0 0 12px {accent_tint};"></div>
                     </div>
