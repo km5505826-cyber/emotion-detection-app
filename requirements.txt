@@ -10,7 +10,3 @@ onnxruntime==1.19.2
 google-genai
 streamlit-webrtc==0.47.1
 av==12.3.0
-
-
-
-
