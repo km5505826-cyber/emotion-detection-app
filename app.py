@@ -10,18 +10,22 @@ import html as html_lib
 import re
 import streamlit as st
 import streamlit.components.v1 as components
-from PIL import Image, ImageOps
-import numpy as np
-import cv2
-import pandas as pd
-from deepface import DeepFace  # used ONLY to detect faces
 
-try:  # real-time camera preview (optional): pip install streamlit-webrtc av
+# Real-time camera preview (optional). Keep this import ABOVE cv2, TensorFlow and DeepFace:
+# PyAV and OpenCV each bundle their own video libraries, and loading PyAV after them can crash
+# the whole process with a segmentation fault.
+try:
     import av
     from streamlit_webrtc import webrtc_streamer, WebRtcMode
     WEBRTC_OK = True
 except Exception:
     WEBRTC_OK = False
+
+from PIL import Image, ImageOps
+import numpy as np
+import cv2
+import pandas as pd
+from deepface import DeepFace  # used ONLY to detect faces
 
 # =============================================================================
 # PAGE CONFIG
@@ -2899,4 +2903,5 @@ if len(st.session_state.history) > 0:
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
+
 
