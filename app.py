@@ -1,5 +1,5 @@
 import os
-os.environ["TF_USE_LEGACY_KERAS"] = "1"
+os. environ ["TF_USE_LEGACY_KERAS"] = os. environ["TF_CPP_MIN_LOG_LEVEL"]
 import io
 import time
 import json
