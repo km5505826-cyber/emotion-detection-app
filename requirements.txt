@@ -1,5 +1,6 @@
 streamlit>=1.38.0,<1.42.0
 deepface==0.0.93
+tf-keras
 opencv-python-headless==4.10.0.84
 numpy>=1.24.0,<2.0.0
 pandas
@@ -9,6 +10,7 @@ onnxruntime==1.19.2
 google-genai
 streamlit-webrtc==0.47.1
 av==12.3.0
+
 
 
 
