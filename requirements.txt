@@ -1,10 +1,14 @@
 streamlit>=1.40
 deepface
 tf-keras
-opencv-python-headless
+flask
+opencv-python-headless<5
 numpy
 pandas
 pillow
 hsemotion-onnx
 onnxruntime
 google-genai
+streamlit-webrtc
+av
+
