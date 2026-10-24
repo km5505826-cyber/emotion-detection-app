@@ -727,7 +727,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
     busy = true;
     if (!camReady) { setStatus("The camera is not ready yet.", true); return; }
     var now = performance.now() / 1000, n = liveTracks(now).length;
-    var count = n > 1 ? 1 : 5;   // one person: average a short burst; a group: a single frame keeps every face
+    var count = 1;   // one photo is enough: the analysis already shows every emotion as a percentage
     var f = $("flash"); f.style.transition = "none"; f.style.opacity = "0.85";
     setTimeout(function () { f.style.transition = "opacity 0.35s ease-out"; f.style.opacity = "0"; }, 30);
     setStatus("Hold still...", false);
@@ -2903,6 +2903,7 @@ if len(st.session_state.history) > 0:
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
+
 
 
 
