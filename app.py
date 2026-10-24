@@ -413,7 +413,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
   * { box-sizing: border-box; margin: 0; padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
       -webkit-font-smoothing: antialiased; }
-  html, body { background: transparent; color: var(--text); }
+  html, body { background: transparent; color: var(--text); overflow: hidden; }
   #wrap { display: flex; flex-direction: column; gap: 12px; padding: 3px; }
   #stageBox { position: relative; border: 1.5px solid var(--border); border-radius: 24px; overflow: hidden; background: #000;
               box-shadow: 0 0 20px rgba(56, 189, 248, 0.25); }
@@ -426,6 +426,11 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
   #status.err { border-color: #F87171; }
   #status.hide { display: none; }
   #panel { display: none; }
+  #btnRow { display: flex; justify-content: center; }
+  #shot { min-width: 220px; padding: 14px 34px; border-radius: 9999px; border: 2px solid var(--border); background: var(--card);
+          color: var(--text); font-size: 1.05rem; font-weight: 800; cursor: pointer; box-shadow: 0 0 18px rgba(56, 189, 248, 0.35);
+          -webkit-tap-highlight-color: transparent; transition: transform 0.15s ease, box-shadow 0.15s ease; }
+  #shot:active { transform: scale(0.96); box-shadow: 0 0 28px rgba(56, 189, 248, 0.6); }
   #head { font-weight: 800; font-size: 1.02rem; margin-bottom: 8px; color: var(--accent); }
   #top { font-size: 1.35rem; font-weight: 800; margin-bottom: 10px; min-height: 1.8rem; }
   #top small { font-size: 0.8rem; color: var(--muted); font-weight: 700; }
@@ -448,6 +453,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
       <div id="status">Starting camera...</div>
     </div>
   </div>
+  <div id="btnRow"><button id="shot" type="button">&#128248; Take photo</button></div>
   <div id="panel">
     <div id="head">Live read</div>
     <div id="top"></div>
@@ -475,18 +481,17 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
 
   function $(id) { return document.getElementById(id); }
   var video = $("v"), canvas = $("c"), g = canvas.getContext("2d");
-  var args = {}, lastToken = null;
+  var args = __ARGS__;
   var tracks = [], lastUpdate = 0;
   var camReady = false, engineReady = false, usingCpu = false;
 
-  // ----- Streamlit component protocol -----
-  function send(type, data) {
-    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
-  }
-  function setHeight() { send("streamlit:setFrameHeight", { height: Math.ceil($("wrap").getBoundingClientRect().height) + 10 }); }
-  function setValue(v) { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
   var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
-
+  function setHeight() {
+    try {
+      var h = Math.ceil($("wrap").getBoundingClientRect().height) + 12;
+      if (window.frameElement) window.frameElement.style.height = h + "px";
+    } catch (e) {}
+  }
   function applyTheme(a) {
     var s = document.documentElement.style;
     if (a.card) s.setProperty("--card", a.card);
@@ -495,18 +500,25 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
     if (a.muted) s.setProperty("--muted", a.muted);
     if (a.accent) s.setProperty("--accent", a.accent);
   }
-
-  window.addEventListener("message", function (ev) {
-    var d = ev.data;
-    if (!d || d.type !== "streamlit:render") return;
-    args = d.args || {};
-    applyTheme(args);
-    var tok = Number(args.capture_token || 0);
-    if (lastToken === null) { lastToken = tok; }          // never capture just because the page (re)loaded
-    else if (tok !== lastToken) { lastToken = tok; capture(tok); }
-  });
-  send("streamlit:componentReady", { apiVersion: 1 });
+  applyTheme(args);
   if (window.ResizeObserver) new ResizeObserver(setHeight).observe($("wrap"));
+
+  // Hand the captured frames to the app: they are placed in its hidden file box, exactly as if chosen by hand.
+  function deliver(frames) {
+    try {
+      var input = window.parent.document.querySelector('.st-key-live_capture_box input[type="file"]');
+      if (!input) return false;
+      var dt = new DataTransfer();
+      frames.forEach(function (u, i) {
+        var bin = atob(u.split(",")[1]), arr = new Uint8Array(bin.length);
+        for (var j = 0; j < bin.length; j++) arr[j] = bin.charCodeAt(j);
+        dt.items.add(new File([arr], "live_frame_" + (i + 1) + ".jpg", { type: "image/jpeg" }));
+      });
+      input.files = dt.files;
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    } catch (e) { return false; }
+  }
 
   // ----- status pill -----
   var statusTimer = null;
@@ -709,7 +721,10 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
     c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
     return c.toDataURL("image/jpeg", 0.92);
   }
-  async function capture(tok) {
+  var busy = false;
+  async function capture() {
+    if (busy) return;
+    busy = true;
     if (!camReady) { setStatus("The camera is not ready yet.", true); return; }
     var now = performance.now() / 1000, n = liveTracks(now).length;
     var count = n > 1 ? 1 : 5;   // one person: average a short burst; a group: a single frame keeps every face
@@ -718,11 +733,15 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
     setStatus("Hold still...", false);
     var frames = [];
     for (var i = 0; i < count; i++) { frames.push(grab()); if (i < count - 1) await sleep(110); }
-    setStatus("Photo taken. Analysing below...", false);
-    setValue({ token: tok, frames: frames, faces: n });
+    var ok = deliver(frames);
+    setStatus(ok ? "Photo taken. Analysing below..." : "Could not pass the photo to the app. Reload the page and try again.", !ok);
+    busy = false;
     clearTimeout(statusTimer);
     statusTimer = setTimeout(function () { setStatus("", false); }, 2500);
   }
+
+  $("shot").addEventListener("click", function () { capture(); });
+  setHeight();
 
   // ----- go -----
   (async function main() {
@@ -755,14 +774,9 @@ class SnapshotFile:
         return self._data
 
 
-def get_live_cam():
-    """Write the camera page to a temp folder and register it as a Streamlit component."""
-    folder = Path(tempfile.gettempdir()) / "fei_live_cam"
-    folder.mkdir(parents=True, exist_ok=True)
-    page = folder / "index.html"
-    if not page.exists() or page.read_text(encoding="utf-8") != LIVE_CAM_HTML:
-        page.write_text(LIVE_CAM_HTML, encoding="utf-8")
-    return components.declare_component("fei_live_cam", path=str(folder))
+def live_cam_html(theme: dict) -> str:
+    """The camera page with the app's colours filled in."""
+    return LIVE_CAM_HTML.replace("__ARGS__", json.dumps(theme))
 
 
 # =============================================================================
@@ -1419,6 +1433,16 @@ div[data-testid="stCameraInput"] > div {{
 div[data-testid="stCameraInput"] video {{
     transform: scaleX(-1) !important;
     border-radius: 14px !important;
+}}
+
+.st-key-live_capture_box {{
+    position: absolute !important;
+    left: -9999px !important;
+    top: 0;
+    width: 1px !important;
+    height: 1px !important;
+    overflow: hidden !important;
+    opacity: 0;
 }}
 
 .st-key-media_zone {{
@@ -2366,48 +2390,33 @@ photos = []  # list of (file, is_camera)
 burst_mode = False  # True for a live burst: always averaged
 
 if st.session_state.active_mode == "live":
-    st.session_state.setdefault("cam_token", 0)
-    st.session_state.setdefault("cam_done", 0)
+    st.session_state.setdefault("live_reset", 0)
 
-    cam_slot = st.container(key="media_zone")  # the video sits above the buttons, but is drawn after the button is read
-
-    _, take_col, discard_col, _ = st.columns([1, 2, 2, 1])
-    with take_col:
-        if st.button("📸 Take photo", key="take_photo_btn"):
-            st.session_state.cam_token += 1
-    with discard_col:
-        if st.session_state.get("live_snapshots"):
-            if st.button("🗑️ Discard photo", key="live_discard_btn"):
-                st.session_state.live_snapshots = None
-
-    with cam_slot:
-        cam_value = get_live_cam()(
-            capture_token=int(st.session_state.cam_token),
-            dark=bool(is_dark),
-            card=card_bg,
-            border=capsule_border,
-            text=text_main,
-            muted=text_muted,
-            accent=accent_tint,
-            key="live_cam",
-            default=None,
+    with st.container(key="media_zone"):
+        components.html(
+            live_cam_html(
+                dict(dark=bool(is_dark), card=card_bg, border=capsule_border, text=text_main, muted=text_muted, accent=accent_tint)
+            ),
+            height=560,
         )
 
-    # A new photo arrives as a few JPEG frames from the browser
-    if isinstance(cam_value, dict) and int(cam_value.get("token", 0)) > st.session_state.cam_done:
-        st.session_state.cam_done = int(cam_value["token"])
-        shots = []
-        for data_url in cam_value.get("frames", []):
-            try:
-                shots.append(base64.b64decode(str(data_url).split(",", 1)[1]))
-            except Exception:
-                continue
-        if shots:
-            st.session_state.live_snapshots = shots
+    # The camera page drops its captured frames into this box (hidden by CSS); the app reads them from here.
+    with st.container(key="live_capture_box"):
+        live_files = st.file_uploader(
+            "Live capture",
+            type=["jpg", "jpeg"],
+            accept_multiple_files=True,
+            key=f"live_capture_{st.session_state.live_reset}",
+            label_visibility="collapsed",
+        )
 
-    snaps = st.session_state.get("live_snapshots")
-    if snaps:
-        photos = [(SnapshotFile(b, f"live_frame_{i + 1}.jpg"), True) for i, b in enumerate(snaps)]
+    if live_files:
+        _, discard_col, _ = st.columns([1, 2, 1])
+        with discard_col:
+            if st.button("🗑️ Discard photo", key="live_discard_btn"):
+                st.session_state.live_reset += 1
+                st.rerun()
+        photos = [(f, True) for f in live_files[:MAX_PHOTOS]]
         burst_mode = len(photos) > 1
         st.caption(
             f"Full analysis of your photo ({len(photos)} frames averaged for accuracy)."
@@ -2894,6 +2903,7 @@ if len(st.session_state.history) > 0:
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
+
 
 
 
