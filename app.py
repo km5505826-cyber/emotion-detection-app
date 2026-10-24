@@ -1498,11 +1498,22 @@ div[data-testid="stExpander"] {{
     background: transparent !important;
     margin-top: 10px;
 }}
+div[data-testid="stExpander"] details,
+div[data-testid="stExpander"] summary {{
+    background: transparent !important;
+    border-radius: 18px !important;
+}}
 div[data-testid="stExpander"] summary,
-div[data-testid="stExpander"] summary p {{
+div[data-testid="stExpander"] summary p,
+div[data-testid="stExpander"] summary span {{
     color: {text_main} !important;
     font-weight: 700 !important;
 }}
+.model-table {{ width: 100%; border-collapse: collapse; font-size: 0.82rem; }}
+.model-table th, .model-table td {{ padding: 7px 6px; text-align: right; border-bottom: 1px solid {capsule_border}; color: {text_main}; }}
+.model-table th:first-child, .model-table td:first-child {{ text-align: left; font-weight: 700; }}
+.model-table td.hot {{ font-weight: 800; color: {accent_tint}; }}
+.model-wrap {{ overflow-x: auto; }}
 div[data-testid="stExpander"] p,
 div[data-testid="stExpander"] li {{
     color: {text_main} !important;
@@ -1927,6 +1938,17 @@ components.html(
         animateWaterWake();
 
         parentDoc.removeEventListener('click', window.spawnBubbleBurst, true);
+        // This small script page is rebuilt on every rerun, which stops its own timers and used to leave
+        // click bubbles stuck on screen. Timers therefore run on the main page, and leftovers are swept.
+        const pw = parentDoc.defaultView || window;
+        parentDoc.querySelectorAll('[data-fei-burst]').forEach(function(n) {{ n.remove(); }});
+        if (pw._feiBurstSweep) pw.clearInterval(pw._feiBurstSweep);
+        pw._feiBurstSweep = pw.setInterval(function() {{
+            const t = Date.now();
+            parentDoc.querySelectorAll('[data-fei-burst]').forEach(function(n) {{
+                if (t - Number(n.getAttribute('data-fei-burst')) > 1500) n.remove();
+            }});
+        }}, 500);
         window.spawnBubbleBurst = function(e) {{
             for (let i = 0; i < 5; i++) {{
                 const bubble = parentDoc.createElement('div');
@@ -1934,6 +1956,7 @@ components.html(
                 const destX = (Math.random() - 0.5) * 90;
                 const destY = -(Math.random() * 95 + 45);
 
+                bubble.setAttribute('data-fei-burst', String(Date.now()));
                 bubble.style.position = 'fixed';
                 bubble.style.left = (e.clientX - size / 2) + 'px';
                 bubble.style.top = (e.clientY - size / 2) + 'px';
@@ -1951,12 +1974,12 @@ components.html(
 
                 parentDoc.body.appendChild(bubble);
 
-                requestAnimationFrame(() => {{
+                pw.requestAnimationFrame(() => {{
                     bubble.style.transform = `translate(${{destX}}px, ${{destY}}px) scale(1.15)`;
                     bubble.style.opacity = '0';
                 }});
 
-                setTimeout(() => {{
+                pw.setTimeout(() => {{
                     if (bubble.parentNode) bubble.parentNode.removeChild(bubble);
                 }}, 900);
             }}
@@ -2642,10 +2665,19 @@ else:
                 )
                 rows = {"Final (average)": details_face["emotion"]}
                 rows.update(details_face["models"])
-                table = pd.DataFrame(rows).T.round(1)
-                table.columns = [c.capitalize() for c in table.columns]
-                table.insert(0, "Top", [max(r.items(), key=lambda kv: kv[1])[0].capitalize() for r in rows.values()])
-                st.dataframe(table, use_container_width=True)
+                order = list(details_face["emotion"].keys())
+                head = "".join(f"<th>{html_lib.escape(e.capitalize())}</th>" for e in order)
+                body = ""
+                for name, sc in rows.items():
+                    top = max(sc, key=sc.get)
+                    cells = "".join(
+                        f'<td class="{"hot" if e == top else ""}">{sc[e]:.1f}</td>' for e in order
+                    )
+                    body += f"<tr><td>{html_lib.escape(name)}</td>{cells}</tr>"
+                st.markdown(
+                    f'<div class="model-wrap"><table class="model-table"><tr><th>Model</th>{head}</tr>{body}</table></div>',
+                    unsafe_allow_html=True,
+                )
 
         calibrated_emotions = primary_cls["scores"]
         dominant_label = primary_cls["dominant"]
