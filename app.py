@@ -711,12 +711,13 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
   // ----- stronger live model: the same HSEmotion network the full analysis uses, run in the browser -----
   var ORT_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.1/dist/";
   var ORT_URLS = [ORT_BASE + "ort.min.js", "https://unpkg.com/onnxruntime-web@1.17.1/dist/ort.min.js"];
-  var ONNX_URLS = [
-    "https://raw.githubusercontent.com/av-savchenko/face-emotion-recognition/main/models/affectnet_emotions/onnx/enet_b0_8_best_vgaf.onnx",
-    "https://cdn.jsdelivr.net/gh/av-savchenko/face-emotion-recognition@main/models/affectnet_emotions/onnx/enet_b0_8_best_vgaf.onnx"
+  var MODEL_FILES = ["enet_b0_8_best_vgaf", "enet_b0_8_best_afew", "enet_b2_8"];   // same three models as Take photo
+  var ONNX_HOSTS = [
+    "https://raw.githubusercontent.com/av-savchenko/face-emotion-recognition/main/models/affectnet_emotions/onnx/",
+    "https://cdn.jsdelivr.net/gh/av-savchenko/face-emotion-recognition@main/models/affectnet_emotions/onnx/"
   ];
   var HSE = ["angry", "contempt", "disgusted", "fearful", "happy", "neutral", "sad", "surprised"];
-  var session = null, betterReady = false, crop = document.createElement("canvas");
+  var sessions = [], betterReady = false, crop = document.createElement("canvas");
   crop.width = crop.height = 224;
   async function loadBetter() {
     try {
@@ -726,14 +727,19 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
       if (!window.ort) return;
       ort.env.wasm.numThreads = 1;
       ort.env.wasm.wasmPaths = ORT_BASE;
-      var buf = null;
-      for (var j = 0; j < ONNX_URLS.length && !buf; j++) {
-        try { var r = await fetch(ONNX_URLS[j]); if (r.ok) buf = await r.arrayBuffer(); } catch (e) {}
+      for (var m = 0; m < MODEL_FILES.length; m++) {
+        var buf = null;
+        for (var j = 0; j < ONNX_HOSTS.length && !buf; j++) {
+          try { var r = await fetch(ONNX_HOSTS[j] + MODEL_FILES[m] + ".onnx"); if (r.ok) buf = await r.arrayBuffer(); } catch (e) {}
+        }
+        if (!buf) continue;
+        try {
+          sessions.push(await ort.InferenceSession.create(buf, { executionProviders: ["wasm"] }));
+          betterReady = true;   // live view upgrades as soon as the first model is ready, then adds the others
+        } catch (e) {}
       }
-      if (!buf) return;
-      session = await ort.InferenceSession.create(buf, { executionProviders: ["wasm"] });
-      betterReady = true;
-      if (engineReady) { setStatus("Stronger live model ready.", false); clearTimeout(statusTimer); statusTimer = setTimeout(function () { setStatus("", false); }, 2000); }
+      if (!betterReady) return;
+      if (engineReady) { setStatus("Live view now uses " + sessions.length + " models.", false); clearTimeout(statusTimer); statusTimer = setTimeout(function () { setStatus("", false); }, 2000); }
     } catch (e) { betterReady = false; }
   }
   async function readFace(box) {
@@ -748,13 +754,21 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
     for (var i = 0; i < n; i++) {
       for (var c = 0; c < 3; c++) f[c * n + i] = (px[i * 4 + c] / 255 - mean[c]) / std[c];
     }
-    var out = await session.run((function () { var o = {}; o[session.inputNames[0]] = new ort.Tensor("float32", f, [1, 3, 224, 224]); return o; })());
-    var logits = out[Object.keys(out)[0]].data, mx = -Infinity, k;
-    for (k = 0; k < 8; k++) mx = Math.max(mx, logits[k]);
-    var e = [], tot = 0;
-    for (k = 0; k < 8; k++) { e[k] = Math.exp(logits[k] - mx); tot += e[k]; }
+    var acc = [0, 0, 0, 0, 0, 0, 0, 0], used = 0, k;
+    for (var si = 0; si < sessions.length; si++) {
+      var ss = sessions[si], inp = {};
+      inp[ss.inputNames[0]] = new ort.Tensor("float32", f, [1, 3, 224, 224]);
+      var out = await ss.run(inp);
+      var logits = out[Object.keys(out)[0]].data, mx = -Infinity;
+      for (k = 0; k < 8; k++) mx = Math.max(mx, logits[k]);
+      var e = [], tot = 0;
+      for (k = 0; k < 8; k++) { e[k] = Math.exp(logits[k] - mx); tot += e[k]; }
+      for (k = 0; k < 8; k++) acc[k] += e[k] / tot;
+      used++;
+    }
+    if (!used) return null;
     var raw = {};
-    for (k = 0; k < 8; k++) if (HSE[k] !== "contempt") raw[HSE[k]] = e[k] / tot;
+    for (k = 0; k < 8; k++) if (HSE[k] !== "contempt") raw[HSE[k]] = acc[k] / used;
     return toScores(raw);
   }
   async function useCpu() {
@@ -774,7 +788,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
         });
         if (betterReady) {
           try {
-            var bigFirst = dets.slice().sort(function (a, b) { return b.box.w * b.box.h - a.box.w * a.box.h; }).slice(0, 3);
+            var bigFirst = dets.slice().sort(function (a, b) { return b.box.w * b.box.h - a.box.w * a.box.h; }).slice(0, 2);
             for (var q = 0; q < bigFirst.length; q++) {
               var sc = await readFace(bigFirst[q].box);
               if (sc) bigFirst[q].scores = sc;
