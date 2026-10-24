@@ -708,6 +708,55 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
     }
     throw new Error("models");
   }
+  // ----- stronger live model: the same HSEmotion network the full analysis uses, run in the browser -----
+  var ORT_BASE = "https://cdn.jsdelivr.net/npm/onnxruntime-web@1.17.1/dist/";
+  var ORT_URLS = [ORT_BASE + "ort.min.js", "https://unpkg.com/onnxruntime-web@1.17.1/dist/ort.min.js"];
+  var ONNX_URLS = [
+    "https://raw.githubusercontent.com/av-savchenko/face-emotion-recognition/main/models/affectnet_emotions/onnx/enet_b0_8_best_vgaf.onnx",
+    "https://cdn.jsdelivr.net/gh/av-savchenko/face-emotion-recognition@main/models/affectnet_emotions/onnx/enet_b0_8_best_vgaf.onnx"
+  ];
+  var HSE = ["angry", "contempt", "disgusted", "fearful", "happy", "neutral", "sad", "surprised"];
+  var session = null, betterReady = false, crop = document.createElement("canvas");
+  crop.width = crop.height = 224;
+  async function loadBetter() {
+    try {
+      for (var i = 0; i < ORT_URLS.length && !window.ort; i++) {
+        try { await loadScript(ORT_URLS[i]); } catch (e) {}
+      }
+      if (!window.ort) return;
+      ort.env.wasm.numThreads = 1;
+      ort.env.wasm.wasmPaths = ORT_BASE;
+      var buf = null;
+      for (var j = 0; j < ONNX_URLS.length && !buf; j++) {
+        try { var r = await fetch(ONNX_URLS[j]); if (r.ok) buf = await r.arrayBuffer(); } catch (e) {}
+      }
+      if (!buf) return;
+      session = await ort.InferenceSession.create(buf, { executionProviders: ["wasm"] });
+      betterReady = true;
+      if (engineReady) { setStatus("Stronger live model ready.", false); clearTimeout(statusTimer); statusTimer = setTimeout(function () { setStatus("", false); }, 2000); }
+    } catch (e) { betterReady = false; }
+  }
+  async function readFace(box) {
+    var vw = video.videoWidth, vh = video.videoHeight, pad = 0.16 * Math.max(box.w, box.h);
+    var x1 = Math.max(0, box.x - pad), y1 = Math.max(0, box.y - pad);
+    var x2 = Math.min(vw, box.x + box.w + pad), y2 = Math.min(vh, box.y + box.h + pad);
+    if (x2 - x1 < 20 || y2 - y1 < 20) return null;
+    var cg = crop.getContext("2d");
+    cg.drawImage(video, x1, y1, x2 - x1, y2 - y1, 0, 0, 224, 224);
+    var px = cg.getImageData(0, 0, 224, 224).data, n = 224 * 224, f = new Float32Array(3 * n);
+    var mean = [0.485, 0.456, 0.406], std = [0.229, 0.224, 0.225];
+    for (var i = 0; i < n; i++) {
+      for (var c = 0; c < 3; c++) f[c * n + i] = (px[i * 4 + c] / 255 - mean[c]) / std[c];
+    }
+    var out = await session.run((function () { var o = {}; o[session.inputNames[0]] = new ort.Tensor("float32", f, [1, 3, 224, 224]); return o; })());
+    var logits = out[Object.keys(out)[0]].data, mx = -Infinity, k;
+    for (k = 0; k < 8; k++) mx = Math.max(mx, logits[k]);
+    var e = [], tot = 0;
+    for (k = 0; k < 8; k++) { e[k] = Math.exp(logits[k] - mx); tot += e[k]; }
+    var raw = {};
+    for (k = 0; k < 8; k++) if (HSE[k] !== "contempt") raw[HSE[k]] = e[k] / tot;
+    return toScores(raw);
+  }
   async function useCpu() {
     if (usingCpu || !window.faceapi || !faceapi.tf) return false;
     try { usingCpu = true; await faceapi.tf.setBackend("cpu"); await faceapi.tf.ready(); return true; } catch (e) { return false; }
@@ -723,6 +772,15 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
         var dets = res.map(function (r) {
           return { box: { x: r.detection.box.x, y: r.detection.box.y, w: r.detection.box.width, h: r.detection.box.height }, scores: toScores(r.expressions) };
         });
+        if (betterReady) {
+          try {
+            var bigFirst = dets.slice().sort(function (a, b) { return b.box.w * b.box.h - a.box.w * a.box.h; }).slice(0, 3);
+            for (var q = 0; q < bigFirst.length; q++) {
+              var sc = await readFace(bigFirst[q].box);
+              if (sc) bigFirst[q].scores = sc;
+            }
+          } catch (e2) { betterReady = false; }   // fall back to the small model
+        }
         updateTracks(dets, now);
         draw(now);
         if (now - lastPanel > 0.08) { updatePanel(now); lastPanel = now; }
@@ -745,7 +803,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
   async function capture() {
     if (busy) return;
     busy = true;
-    if (!camReady) { setStatus("The camera is not ready yet.", true); return; }
+    if (!camReady) { setStatus("The camera is not ready yet.", true); busy = false; return; }
     var now = performance.now() / 1000, n = liveTracks(now).length;
     var count = 1;   // one photo is enough: the analysis already shows every emotion as a percentage
     var f = $("flash"); f.style.transition = "none"; f.style.opacity = "0.85";
@@ -771,6 +829,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
       await loadEngine();
       engineReady = true;
       setStatus("Looking for a face...", false);
+      loadBetter();   // optional: upgrades the live reading when it finishes downloading
       loop();
     } catch (e) {
       setStatus("Live emotion could not load. Take photo still works.", true);
