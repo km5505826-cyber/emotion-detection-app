@@ -415,11 +415,6 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
       -webkit-font-smoothing: antialiased; }
   html, body { background: transparent; color: var(--text); }
   #wrap { display: flex; flex-direction: column; gap: 12px; padding: 3px; }
-  @media (min-width: 720px) {
-    #wrap { flex-direction: row; align-items: flex-start; }
-    #stageBox { flex: 1.35; }
-    #panel { flex: 1; }
-  }
   #stageBox { position: relative; border: 1.5px solid var(--border); border-radius: 24px; overflow: hidden; background: #000;
               box-shadow: 0 0 20px rgba(56, 189, 248, 0.25); }
   #stage { position: relative; width: 100%; aspect-ratio: 4 / 3; }
@@ -430,7 +425,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
             font-weight: 700; text-align: center; background: var(--card); border: 1px solid var(--border); color: var(--text); }
   #status.err { border-color: #F87171; }
   #status.hide { display: none; }
-  #panel { border: 1.5px solid var(--border); border-radius: 24px; background: var(--card); padding: 16px 18px; width: 100%; }
+  #panel { display: none; }
   #head { font-weight: 800; font-size: 1.02rem; margin-bottom: 8px; color: var(--accent); }
   #top { font-size: 1.35rem; font-weight: 800; margin-bottom: 10px; min-height: 1.8rem; }
   #top small { font-size: 0.8rem; color: var(--muted); font-weight: 700; }
@@ -739,7 +734,6 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
       setStatus("Looking for a face...", false);
       loop();
     } catch (e) {
-      $("bars").innerHTML = '<div id="empty">Live emotion needs an internet connection and could not start. Take photo still works.</div>';
       setStatus("Live emotion could not load. Take photo still works.", true);
     }
   })();
@@ -1108,6 +1102,7 @@ if is_dark:
     text_main = "#FFFFFF"
     text_muted = "#94A3B8"
     accent_tint = "#38BDF8"
+    media_solid = "#071a30"
     bubble_bg = "rgba(125, 211, 252, 0.35)"
     bubble_border = "rgba(255, 255, 255, 0.6)"
     dropzone_bg = "rgba(7, 18, 38, 0.75)"
@@ -1123,6 +1118,7 @@ else:
     text_main = "#0F172A"
     text_muted = "#64748B"
     accent_tint = "#0284C7"
+    media_solid = "#EAF5FE"
     bubble_bg = "rgba(14, 165, 233, 0.3)"
     bubble_border = "rgba(2, 132, 199, 0.5)"
     dropzone_bg = "rgba(255, 255, 255, 0.88)"
@@ -1423,6 +1419,15 @@ div[data-testid="stCameraInput"] > div {{
 div[data-testid="stCameraInput"] video {{
     transform: scaleX(-1) !important;
     border-radius: 14px !important;
+}}
+
+.st-key-media_zone {{
+    background: {media_solid};
+    border-radius: 26px;
+    padding: 0.5rem;
+    position: relative;
+    z-index: 3;
+    margin-bottom: 0.8rem;
 }}
 
 .st-key-feed_panel,
@@ -2364,7 +2369,7 @@ if st.session_state.active_mode == "live":
     st.session_state.setdefault("cam_token", 0)
     st.session_state.setdefault("cam_done", 0)
 
-    cam_slot = st.container()  # the video sits above the buttons, but is drawn after the button is read
+    cam_slot = st.container(key="media_zone")  # the video sits above the buttons, but is drawn after the button is read
 
     _, take_col, discard_col, _ = st.columns([1, 2, 2, 1])
     with take_col:
@@ -2410,12 +2415,13 @@ if st.session_state.active_mode == "live":
             else "Full analysis of your photo."
         )
 else:
-    uploaded_files = st.file_uploader(
-        f"Upload an image (JPG, PNG). Add up to {MAX_PHOTOS} photos of the same person to average them.",
-        type=["jpg", "jpeg", "png"],
-        accept_multiple_files=True,
-        key="file_upload_feed",
-    )
+    with st.container(key="media_zone"):
+        uploaded_files = st.file_uploader(
+            f"Upload an image (JPG, PNG). Add up to {MAX_PHOTOS} photos of the same person to average them.",
+            type=["jpg", "jpeg", "png"],
+            accept_multiple_files=True,
+            key="file_upload_feed",
+        )
     if uploaded_files:
         if len(uploaded_files) > MAX_PHOTOS:
             st.warning(f"Only the first {MAX_PHOTOS} photos are used.")
@@ -2888,6 +2894,7 @@ if len(st.session_state.history) > 0:
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
+
 
 
 
