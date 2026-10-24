@@ -488,8 +488,10 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
   var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
   function setHeight() {
     try {
-      var h = Math.ceil($("wrap").getBoundingClientRect().height) + 12;
-      if (window.frameElement) window.frameElement.style.height = h + "px";
+      var box = $("stageBox"), ratio = video.videoWidth && video.videoHeight ? video.videoWidth / video.videoHeight : 4 / 3;
+      var avail = $("wrap").clientWidth;
+      box.style.width = Math.min(avail, Math.round(440 * ratio)) + "px";   // never taller than ~440px
+      box.style.margin = "0 auto";
     } catch (e) {}
   }
   function applyTheme(a) {
@@ -2398,6 +2400,7 @@ if st.session_state.active_mode == "live":
                 dict(dark=bool(is_dark), card=card_bg, border=capsule_border, text=text_main, muted=text_muted, accent=accent_tint)
             ),
             height=560,
+            scrolling=False,
         )
 
     # The camera page drops its captured frames into this box (hidden by CSS); the app reads them from here.
@@ -2903,9 +2906,4 @@ if len(st.session_state.history) > 0:
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
-
-
-
-
-
 
