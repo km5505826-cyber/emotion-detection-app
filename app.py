@@ -571,7 +571,7 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
       } else {
         free.splice(free.indexOf(best), 1);
         ["x", "y", "w", "h"].forEach(function (k) { best.box[k] = (1 - aBox) * best.box[k] + aBox * d.box[k]; });
-        var tau = (now - best.born < 1.0) ? 0.12 : 0.45;
+        var tau = (now - best.born < 1.0) ? 0.35 : 1.3;   // slow, steady readings
         var a = 1 - Math.exp(-dt / tau);
         for (var k in d.scores) {
           var prev = best.scores[k] === undefined ? d.scores[k] : best.scores[k];
@@ -586,6 +586,15 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
     var vw = video.videoWidth || 1;
     return tracks.filter(function (t) { return now - t.seen <= 0.6; })
       .sort(function (a, b) { return (vw - (a.box.x + a.box.w)) - (vw - (b.box.x + b.box.w)); });  // left to right as you see it
+  }
+
+  // The shown name only changes after the new emotion has led for ~0.8 s, so it never flickers.
+  function stableLabel(t, name, now) {
+    if (!t.shown) { t.shown = name; t.cand = name; t.candSince = now; return name; }
+    if (name === t.shown) { t.cand = name; t.candSince = now; return t.shown; }
+    if (name !== t.cand) { t.cand = name; t.candSince = now; }
+    else if (now - t.candSince >= 0.8) { t.shown = name; }
+    return t.shown;
   }
 
   // ----- drawing (the video is mirrored by CSS, so boxes are mirrored here too) -----
@@ -611,7 +620,9 @@ LIVE_CAM_HTML = r'''<!DOCTYPE html>
       [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(function (c) {
         g.beginPath(); g.moveTo(c[0] + c[2] * L, c[1]); g.lineTo(c[0], c[1]); g.lineTo(c[0], c[1] + c[3] * L); g.stroke();
       });
-      var text = classify(t.scores).short;
+      var text = stableLabel(t, classify(t.scores).short.replace(/ \d+%$/, ""), now);
+      var key = text.toLowerCase();
+      if (t.scores[key] !== undefined) text += " " + Math.round(t.scores[key]) + "%";
       if (multi) text = (i + 1) + ": " + text;
       var tw = g.measureText(text).width, pad = 6, bh = fs + 2 * pad;
       var bx = Math.max(0, Math.min(x, vw - tw - 2 * pad - 1));
@@ -2906,4 +2917,3 @@ if len(st.session_state.history) > 0:
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
-
