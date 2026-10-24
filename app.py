@@ -1,28 +1,21 @@
-import os
-os. environ ["TF_USE_LEGACY_KERAS"] = os. environ["TF_CPP_MIN_LOG_LEVEL"]
 import io
 import time
 import json
 import os
 import hashlib
-import threading
-import collections
-import math
+import base64
+import tempfile
+from pathlib import Path
 import html as html_lib
 import re
+
+# DeepFace needs the legacy Keras (tf-keras) on TensorFlow 2.16+. Set it BEFORE TensorFlow is imported,
+# and never read a variable that may not exist (that raised a KeyError on Streamlit Cloud).
+os.environ.setdefault("TF_USE_LEGACY_KERAS", "1")
+os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
+
 import streamlit as st
 import streamlit.components.v1 as components
-
-# Real-time camera preview (optional). Keep this import ABOVE cv2, TensorFlow and DeepFace:
-# PyAV and OpenCV each bundle their own video libraries, and loading PyAV after them can crash
-# the whole process with a segmentation fault.
-try:
-    import av
-    from streamlit_webrtc import webrtc_streamer, WebRtcMode
-    WEBRTC_OK = True
-except Exception:
-    WEBRTC_OK = False
-
 from PIL import Image, ImageOps
 import numpy as np
 import cv2
@@ -403,35 +396,364 @@ def classify_emotions(emo: dict) -> dict:
 
 
 # =============================================================================
-# LIVE (REAL-TIME) EMOTION PREVIEW
+# LIVE CAMERA (runs in the visitor's browser: no extra Python packages needed)
 # =============================================================================
 
-LIVE_MIN_INTERVAL = 0.02   # the models never run more often than this (seconds); they run as fast as they can
-LIVE_MAX_FACES = 4         # label at most this many faces in the live view
-LIVE_TAU = 0.45            # smoothing time constant in seconds (higher = steadier but slower to react)
-LIVE_TAU_NEW = 0.12        # much faster smoothing during the first second of a new face, so it shows up at once
-LIVE_DETECT_WIDTH = 960    # frames are shrunk to this width for face detection only (wider = sees smaller, farther faces)
-LIVE_MIN_FACE = 32         # smallest face (pixels, in the detection frame) that is picked up
-LIVE_BURST = 5             # sharpest recent frames averaged when you press Capture
-LIVE_BUFFER = 12           # recent frames kept for the burst
-LIVE_BUFFER_STEP = 0.12    # seconds between kept frames
+# The live video, face boxes and emotion bars run inside the browser (face-api.js), so nothing is
+# streamed to the server while you watch. Pressing "Take photo" sends a few frames to Python, which
+# runs the full, more accurate analysis on them. If the browser cannot load the live engine, the
+# camera and Take photo still work.
+LIVE_CAM_HTML = r'''<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --card: rgba(6, 17, 36, 0.88); --border: rgba(56, 189, 248, 0.65); --text: #FFFFFF; --muted: #94A3B8; --accent: #38BDF8; }
+  * { box-sizing: border-box; margin: 0; padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif;
+      -webkit-font-smoothing: antialiased; }
+  html, body { background: transparent; color: var(--text); }
+  #wrap { display: flex; flex-direction: column; gap: 12px; padding: 3px; }
+  @media (min-width: 720px) {
+    #wrap { flex-direction: row; align-items: flex-start; }
+    #stageBox { flex: 1.35; }
+    #panel { flex: 1; }
+  }
+  #stageBox { position: relative; border: 1.5px solid var(--border); border-radius: 24px; overflow: hidden; background: #000;
+              box-shadow: 0 0 20px rgba(56, 189, 248, 0.25); }
+  #stage { position: relative; width: 100%; aspect-ratio: 4 / 3; }
+  video, canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; }
+  video { object-fit: fill; transform: scaleX(-1); background: #000; }
+  #flash { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: #fff; opacity: 0; pointer-events: none; transition: opacity 0.35s ease-out; }
+  #status { position: absolute; left: 12px; right: 12px; bottom: 12px; padding: 8px 14px; border-radius: 9999px; font-size: 0.82rem;
+            font-weight: 700; text-align: center; background: var(--card); border: 1px solid var(--border); color: var(--text); }
+  #status.err { border-color: #F87171; }
+  #status.hide { display: none; }
+  #panel { border: 1.5px solid var(--border); border-radius: 24px; background: var(--card); padding: 16px 18px; width: 100%; }
+  #head { font-weight: 800; font-size: 1.02rem; margin-bottom: 8px; color: var(--accent); }
+  #top { font-size: 1.35rem; font-weight: 800; margin-bottom: 10px; min-height: 1.8rem; }
+  #top small { font-size: 0.8rem; color: var(--muted); font-weight: 700; }
+  .row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+  .lab { width: 104px; font-size: 0.8rem; font-weight: 700; text-align: right; white-space: nowrap; }
+  .track { flex: 1; height: 10px; border-radius: 999px; background: rgba(51, 65, 85, 0.45); overflow: hidden; border: 1px solid var(--border); }
+  .fill { height: 100%; border-radius: 999px; background: linear-gradient(90deg, #0284C7, var(--accent)); width: 1.5%; transition: width 0.25s ease; }
+  .val { width: 52px; font-size: 0.8rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+  #note { font-size: 0.74rem; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+  #empty { padding: 14px 2px; font-size: 0.9rem; color: var(--muted); }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="stageBox">
+    <div id="stage">
+      <video id="v" autoplay muted playsinline></video>
+      <canvas id="c"></canvas>
+      <div id="flash"></div>
+      <div id="status">Starting camera...</div>
+    </div>
+  </div>
+  <div id="panel">
+    <div id="head">Live read</div>
+    <div id="top"></div>
+    <div id="bars"><div id="empty">Waiting for the camera...</div></div>
+    <div id="note">Live preview runs on your device. Press <b>Take photo</b> for the full, more accurate analysis, coach and history.</div>
+  </div>
+</div>
 
+<script>
+(function () {
+  // ----- where the live emotion engine (face-api.js) and its small models come from -----
+  var SCRIPT_URLS = [
+    "https://cdn.jsdelivr.net/npm/face-api.js@0.22.2/dist/face-api.min.js",
+    "https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js"
+  ];
+  var MODEL_URLS = [
+    "https://justadudewhohacks.github.io/face-api.js/models",
+    "https://cdn.jsdelivr.net/gh/justadudewhohacks/face-api.js@master/weights",
+    "https://raw.githubusercontent.com/justadudewhohacks/face-api.js/master/weights"
+  ];
+  var MAX_FACES = 4;
 
-def _iou(a, b) -> float:
-    """Overlap of two (x, y, w, h) boxes, 0 to 1."""
-    ax1, ay1, ax2, ay2 = a[0], a[1], a[0] + a[2], a[1] + a[3]
-    bx1, by1, bx2, by2 = b[0], b[1], b[0] + b[2], b[1] + b[3]
-    iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
-    ih = max(0.0, min(ay2, by2) - max(ay1, by1))
-    inter = iw * ih
-    union = a[2] * a[3] + b[2] * b[3] - inter
-    return inter / union if union > 0 else 0.0
+  var EMOJI = { angry: "😠", disgust: "🤢", fear: "😨", happy: "😊", sad: "😔", surprise: "😲", neutral: "😐" };
+  var MAP = { angry: "angry", disgusted: "disgust", fearful: "fear", happy: "happy", sad: "sad", surprised: "surprise", neutral: "neutral" };
+
+  function $(id) { return document.getElementById(id); }
+  var video = $("v"), canvas = $("c"), g = canvas.getContext("2d");
+  var args = {}, lastToken = null;
+  var tracks = [], lastUpdate = 0;
+  var camReady = false, engineReady = false, usingCpu = false;
+
+  // ----- Streamlit component protocol -----
+  function send(type, data) {
+    window.parent.postMessage(Object.assign({ isStreamlitMessage: true, type: type }, data || {}), "*");
+  }
+  function setHeight() { send("streamlit:setFrameHeight", { height: Math.ceil($("wrap").getBoundingClientRect().height) + 10 }); }
+  function setValue(v) { send("streamlit:setComponentValue", { value: v, dataType: "json" }); }
+  var sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };
+
+  function applyTheme(a) {
+    var s = document.documentElement.style;
+    if (a.card) s.setProperty("--card", a.card);
+    if (a.border) s.setProperty("--border", a.border);
+    if (a.text) s.setProperty("--text", a.text);
+    if (a.muted) s.setProperty("--muted", a.muted);
+    if (a.accent) s.setProperty("--accent", a.accent);
+  }
+
+  window.addEventListener("message", function (ev) {
+    var d = ev.data;
+    if (!d || d.type !== "streamlit:render") return;
+    args = d.args || {};
+    applyTheme(args);
+    var tok = Number(args.capture_token || 0);
+    if (lastToken === null) { lastToken = tok; }          // never capture just because the page (re)loaded
+    else if (tok !== lastToken) { lastToken = tok; capture(tok); }
+  });
+  send("streamlit:componentReady", { apiVersion: 1 });
+  if (window.ResizeObserver) new ResizeObserver(setHeight).observe($("wrap"));
+
+  // ----- status pill -----
+  var statusTimer = null;
+  function setStatus(text, isErr) {
+    var el = $("status");
+    el.textContent = text || "";
+    el.className = (isErr ? "err" : "") + (text ? "" : " hide");
+  }
+
+  // ----- classification rules (same as the full analysis) -----
+  function classify(scores) {
+    var ranked = Object.keys(scores).map(function (k) { return [k, scores[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
+    var dom = ranked[0][0], domConf = ranked[0][1], sec = ranked[1][0], secConf = ranked[1][1];
+    var margin = domConf - secConf;
+    var cap = function (s) { return s.charAt(0).toUpperCase() + s.slice(1); };
+    var mixed = margin < 10 && (domConf + secConf) >= 70;
+    var ambiguous = domConf < 35 || margin < 10;
+    if (mixed) return { title: cap(dom) + " + " + cap(sec), emoji: EMOJI[dom] + EMOJI[sec], short: cap(dom) + "+" + cap(sec), conf: domConf };
+    if (ambiguous) return { title: "Ambiguous / Inconclusive", emoji: "🤔", short: "Unclear", conf: domConf };
+    return { title: cap(dom), emoji: EMOJI[dom], short: cap(dom) + " " + Math.round(domConf) + "%", conf: domConf };
+  }
+  function toScores(ex) {
+    var raw = {}, tot = 0, k;
+    for (k in MAP) { var v = Number(ex[k]) || 0; raw[MAP[k]] = v; tot += v; }
+    var out = {};
+    for (k in raw) out[k] = raw[k] / (tot || 1) * 100;
+    return out;
+  }
+
+  // ----- tracking + smoothing (time based, quicker for a brand-new face) -----
+  function iou(a, b) {
+    var iw = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+    var ih = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+    var inter = iw * ih, uni = a.w * a.h + b.w * b.h - inter;
+    return uni > 0 ? inter / uni : 0;
+  }
+  function updateTracks(dets, now) {
+    var dt = lastUpdate ? Math.min(Math.max(now - lastUpdate, 0.02), 1.0) : 0.2;
+    lastUpdate = now;
+    var aBox = 1 - Math.exp(-dt / 0.15);
+    var free = tracks.slice();
+    dets.sort(function (a, b) { return b.box.w * b.box.h - a.box.w * a.box.h; });
+    dets.slice(0, MAX_FACES).forEach(function (d) {
+      var best = null, bi = 0.3;
+      free.forEach(function (t) { var v = iou(t.box, d.box); if (v > bi) { best = t; bi = v; } });
+      if (!best) {
+        tracks.push({ box: { x: d.box.x, y: d.box.y, w: d.box.w, h: d.box.h }, scores: d.scores, seen: now, born: now });
+      } else {
+        free.splice(free.indexOf(best), 1);
+        ["x", "y", "w", "h"].forEach(function (k) { best.box[k] = (1 - aBox) * best.box[k] + aBox * d.box[k]; });
+        var tau = (now - best.born < 1.0) ? 0.12 : 0.45;
+        var a = 1 - Math.exp(-dt / tau);
+        for (var k in d.scores) {
+          var prev = best.scores[k] === undefined ? d.scores[k] : best.scores[k];
+          best.scores[k] = (1 - a) * prev + a * d.scores[k];
+        }
+        best.seen = now;
+      }
+    });
+    tracks = tracks.filter(function (t) { return now - t.seen <= 1.0; });
+  }
+  function liveTracks(now) {
+    var vw = video.videoWidth || 1;
+    return tracks.filter(function (t) { return now - t.seen <= 0.6; })
+      .sort(function (a, b) { return (vw - (a.box.x + a.box.w)) - (vw - (b.box.x + b.box.w)); });  // left to right as you see it
+  }
+
+  // ----- drawing (the video is mirrored by CSS, so boxes are mirrored here too) -----
+  function draw(now) {
+    var vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw) return;
+    if (canvas.width !== vw || canvas.height !== vh) { canvas.width = vw; canvas.height = vh; }
+    g.clearRect(0, 0, vw, vh);
+    var live = liveTracks(now), multi = live.length > 1;
+    var mainIdx = -1, bestA = 0;
+    live.forEach(function (t, i) { var a = t.box.w * t.box.h; if (a > bestA) { bestA = a; mainIdx = i; } });
+    var dark = args.dark !== false;
+    var boxCol = dark ? "#7DD3FC" : "#0284C7", focusCol = dark ? "#C084FC" : "#7C3AED", txtCol = dark ? "#0F172A" : "#FFFFFF";
+    var fs = Math.max(16, Math.round(vw / 30));
+    g.font = "700 " + fs + "px -apple-system, BlinkMacSystemFont, Roboto, sans-serif";
+    g.textBaseline = "middle";
+    live.forEach(function (t, i) {
+      var w = t.box.w, h = t.box.h, x = vw - (t.box.x + w), y = t.box.y;
+      var col = (multi && i === mainIdx) ? focusCol : boxCol;
+      var L = Math.max(Math.round(Math.min(w, h) * 0.18), 14);
+      var lw = Math.max(3, Math.round(vw / 110));
+      g.strokeStyle = col; g.lineWidth = (multi && i === mainIdx) ? Math.round(lw * 1.3) : lw; g.lineCap = "round";
+      [[x, y, 1, 1], [x + w, y, -1, 1], [x, y + h, 1, -1], [x + w, y + h, -1, -1]].forEach(function (c) {
+        g.beginPath(); g.moveTo(c[0] + c[2] * L, c[1]); g.lineTo(c[0], c[1]); g.lineTo(c[0], c[1] + c[3] * L); g.stroke();
+      });
+      var text = classify(t.scores).short;
+      if (multi) text = (i + 1) + ": " + text;
+      var tw = g.measureText(text).width, pad = 6, bh = fs + 2 * pad;
+      var bx = Math.max(0, Math.min(x, vw - tw - 2 * pad - 1));
+      var by = y - bh - 4; if (by < 0) by = y + 4;
+      g.fillStyle = col; g.fillRect(bx, by, tw + 2 * pad, bh);
+      g.fillStyle = txtCol; g.fillText(text, bx + pad, by + bh / 2);
+    });
+  }
+
+  // ----- side panel: all seven emotions of the largest face -----
+  function updatePanel(now) {
+    var live = liveTracks(now);
+    if (!live.length) {
+      $("top").innerHTML = "";
+      $("bars").innerHTML = '<div id="empty">Looking for a face... face the camera in good light.</div>';
+      setStatus(engineReady ? "Looking for a face..." : "", false);
+      return;
+    }
+    setStatus("", false);
+    var main = live.reduce(function (a, b) { return (b.box.w * b.box.h > a.box.w * a.box.h) ? b : a; });
+    var c = classify(main.scores);
+    $("top").innerHTML = c.emoji + " " + c.title + " <small>(" + Math.round(c.conf) + "%)</small>";
+    var ranked = Object.keys(main.scores).map(function (k) { return [k, main.scores[k]]; }).sort(function (a, b) { return b[1] - a[1]; });
+    var html = ranked.map(function (r) {
+      var name = r[0].charAt(0).toUpperCase() + r[0].slice(1);
+      return '<div class="row"><div class="lab">' + EMOJI[r[0]] + " " + name + '</div><div class="track"><div class="fill" style="width:' +
+        Math.max(r[1], 1.5).toFixed(1) + '%"></div></div><div class="val">' + r[1].toFixed(1) + "%</div></div>";
+    }).join("");
+    if (live.length > 1) html += '<div id="note" style="margin-top:8px">' + live.length + " faces in view. The bars show the largest face.</div>";
+    $("bars").innerHTML = html;
+  }
+
+  // ----- camera -----
+  async function startCamera() {
+    setStatus("Starting camera...", false);
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus("This browser cannot use the camera here (it needs a secure https page).", true);
+      return false;
+    }
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false
+      });
+      video.srcObject = stream;
+      try { await video.play(); } catch (e) {}
+      await new Promise(function (r) { if (video.videoWidth) r(); else video.onloadedmetadata = function () { r(); }; });
+      $("stage").style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
+      camReady = true;
+      setHeight();
+      return true;
+    } catch (e) {
+      setStatus("Camera blocked or unavailable. Allow camera access for this site, then reload.", true);
+      return false;
+    }
+  }
+
+  // ----- live emotion engine (optional: Take photo works even if this cannot load) -----
+  function loadScript(url) {
+    return new Promise(function (res, rej) {
+      var s = document.createElement("script");
+      s.src = url; s.onload = res; s.onerror = function () { rej(new Error("script")); };
+      document.head.appendChild(s);
+    });
+  }
+  async function loadEngine() {
+    for (var i = 0; i < SCRIPT_URLS.length && !window.faceapi; i++) {
+      try { await loadScript(SCRIPT_URLS[i]); } catch (e) {}
+    }
+    if (!window.faceapi) throw new Error("engine script");
+    for (var j = 0; j < MODEL_URLS.length; j++) {
+      try {
+        await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_URLS[j]);
+        await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_URLS[j]);
+        return;
+      } catch (e) {}
+    }
+    throw new Error("models");
+  }
+  async function useCpu() {
+    if (usingCpu || !window.faceapi || !faceapi.tf) return false;
+    try { usingCpu = true; await faceapi.tf.setBackend("cpu"); await faceapi.tf.ready(); return true; } catch (e) { return false; }
+  }
+  async function loop() {
+    var opts = new faceapi.TinyFaceDetectorOptions({ inputSize: 320, scoreThreshold: 0.45 });
+    var lastPanel = 0;
+    while (true) {
+      if (document.hidden || video.readyState < 2) { await sleep(150); continue; }
+      try {
+        var res = await faceapi.detectAllFaces(video, opts).withFaceExpressions();
+        var now = performance.now() / 1000;
+        var dets = res.map(function (r) {
+          return { box: { x: r.detection.box.x, y: r.detection.box.y, w: r.detection.box.width, h: r.detection.box.height }, scores: toScores(r.expressions) };
+        });
+        updateTracks(dets, now);
+        draw(now);
+        if (now - lastPanel > 0.08) { updatePanel(now); lastPanel = now; }
+      } catch (e) {
+        if (!(await useCpu())) { setStatus("Live emotion stopped. You can still press Take photo.", true); return; }
+      }
+      await new Promise(function (r) { requestAnimationFrame(r); });
+    }
+  }
+
+  // ----- Take photo: grab frames exactly as the camera sends them (not mirrored) -----
+  function grab() {
+    var vw = video.videoWidth, vh = video.videoHeight, s = Math.min(1, 1280 / vw);
+    var c = document.createElement("canvas");
+    c.width = Math.round(vw * s); c.height = Math.round(vh * s);
+    c.getContext("2d").drawImage(video, 0, 0, c.width, c.height);
+    return c.toDataURL("image/jpeg", 0.92);
+  }
+  async function capture(tok) {
+    if (!camReady) { setStatus("The camera is not ready yet.", true); return; }
+    var now = performance.now() / 1000, n = liveTracks(now).length;
+    var count = n > 1 ? 1 : 5;   // one person: average a short burst; a group: a single frame keeps every face
+    var f = $("flash"); f.style.transition = "none"; f.style.opacity = "0.85";
+    setTimeout(function () { f.style.transition = "opacity 0.35s ease-out"; f.style.opacity = "0"; }, 30);
+    setStatus("Hold still...", false);
+    var frames = [];
+    for (var i = 0; i < count; i++) { frames.push(grab()); if (i < count - 1) await sleep(110); }
+    setStatus("Photo taken. Analysing below...", false);
+    setValue({ token: tok, frames: frames, faces: n });
+    clearTimeout(statusTimer);
+    statusTimer = setTimeout(function () { setStatus("", false); }, 2500);
+  }
+
+  // ----- go -----
+  (async function main() {
+    if (!(await startCamera())) return;
+    setStatus("Loading emotion engine...", false);
+    try {
+      await loadEngine();
+      engineReady = true;
+      setStatus("Looking for a face...", false);
+      loop();
+    } catch (e) {
+      $("bars").innerHTML = '<div id="empty">Live emotion needs an internet connection and could not start. Take photo still works.</div>';
+      setStatus("Live emotion could not load. Take photo still works.", true);
+    }
+  })();
+})();
+</script>
+</body>
+</html>
+'''
 
 
 class SnapshotFile:
     """File-like wrapper so a live capture goes through the same pipeline as an upload."""
 
-    def __init__(self, data: bytes, name: str = "live_capture.png"):
+    def __init__(self, data: bytes, name: str = "live_capture.jpg"):
         self._data = data
         self.name = name
 
@@ -439,277 +761,14 @@ class SnapshotFile:
         return self._data
 
 
-class LiveState:
-    """Shared by the video thread (writes) and the page (reads).
-    The video callback only stores the newest frame and draws the latest result, so the video stays
-    smooth. A worker thread tracks faces and runs the models as fast as it can, smoothing each
-    face's reading over time. It also keeps a short buffer of recent frames for the burst capture."""
-
-    def __init__(self, models):
-        self.models = list(models)[:2]   # fast pair for the live preview; the full analysis uses all models
-        self.lock = threading.Lock()
-        self.raw = None                  # newest frame exactly as the camera sent it (RGB, not mirrored)
-        self.mirrored = None             # same frame, mirrored like the on-screen preview
-        self.frame_time = 0.0
-        self.buffer = collections.deque(maxlen=LIVE_BUFFER)   # (sharpness, raw frame)
-        self.last_buffered = 0.0
-        self.faces, self.labels, self.main = [], [], 0
-        self.scores = None               # smoothed percentages of the largest face
-        self.tracks = []                 # worker thread only
-        self.last_update = 0.0           # worker thread only
-        self.worker = None
-        self.profile = None              # side-view face detector (OpenCV 4 Haar cascade), optional
-        try:
-            cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_profileface.xml")
-            if not cascade.empty():
-                self.profile = cascade
-        except Exception:
-            self.profile = None
-
-    def push_frame(self, raw, mirrored):
-        now = time.time()
-        sharp = None
-        if now - self.last_buffered >= LIVE_BUFFER_STEP:
-            tiny = cv2.resize(mirrored, None, fx=0.25, fy=0.25, interpolation=cv2.INTER_AREA)
-            sharp = float(cv2.Laplacian(cv2.cvtColor(tiny, cv2.COLOR_RGB2GRAY), cv2.CV_64F).var())
-        with self.lock:
-            self.raw, self.mirrored, self.frame_time = raw, mirrored, now
-            if sharp is not None:
-                self.buffer.append((sharp, raw))
-                self.last_buffered = now
-        if self.worker is None or not self.worker.is_alive():
-            self.worker = threading.Thread(target=self._loop, daemon=True)
-            self.worker.start()
-
-    def _loop(self):
-        while True:
-            with self.lock:
-                frame, ts = self.mirrored, self.frame_time
-            if frame is None or time.time() - ts > 5:  # camera stopped: let the thread end
-                break
-            t0 = time.time()
-            try:
-                self.update(frame)
-            except Exception:
-                pass
-            time.sleep(max(0.0, LIVE_MIN_INTERVAL - (time.time() - t0)))
-
-    @staticmethod
-    def detect(img) -> list:
-        """Face boxes (x, y, w, h) with the same detectors as the full analysis (fast ones only)."""
-        h, w = img.shape[:2]
-        bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
-        for backend in ("yunet", "opencv"):
-            try:
-                found = DeepFace.extract_faces(
-                    img_path=bgr, detector_backend=backend, enforce_detection=True, align=False
-                )
-            except Exception:
-                continue
-            boxes = []
-            for f in found:
-                a = f["facial_area"]
-                fx, fy, fw, fh = int(a["x"]), int(a["y"]), int(a["w"]), int(a["h"])
-                if fw < LIVE_MIN_FACE or fh < LIVE_MIN_FACE:
-                    continue
-                if fw >= w * 0.95 and fh >= h * 0.95:  # "whole image" fallback, not a real face
-                    continue
-                boxes.append((fx, fy, fw, fh))
-            if boxes:
-                return boxes
-        return []
-
-    def detect_side(self, small, exclude) -> list:
-        """Faces turned away from the camera (side view). Rough: it only shows that a face is there,
-        and is never used to read an emotion."""
-        if self.profile is None:
-            return []
-        gray = cv2.equalizeHist(cv2.cvtColor(small, cv2.COLOR_RGB2GRAY))
-        width = gray.shape[1]
-        found_boxes = []
-        for flipped in (False, True):  # the cascade finds faces looking one way; mirror to find the other
-            g = cv2.flip(gray, 1) if flipped else gray
-            for (x, y, bw, bh) in self.profile.detectMultiScale(
-                g, scaleFactor=1.1, minNeighbors=6, minSize=(LIVE_MIN_FACE, LIVE_MIN_FACE)
-            ):
-                if flipped:
-                    x = width - x - bw
-                found_boxes.append((int(x), int(y), int(bw), int(bh)))
-        return [bx for bx in found_boxes if all(_iou(bx, e) < 0.2 for e in exclude)]
-
-    def update(self, img):
-        now = time.time()
-        img = enhance_webcam_frame(img)  # only brightens dark frames; well-lit frames are untouched
-        h, w = img.shape[:2]
-        scale = min(1.0, LIVE_DETECT_WIDTH / float(w))
-        small = img if scale == 1.0 else cv2.resize(
-            img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA
-        )
-        front_small = self.detect(small)
-        side_small = self.detect_side(small, front_small)
-
-        def up(bx):
-            return (int(bx[0] / scale), int(bx[1] / scale), int(bx[2] / scale), int(bx[3] / scale))
-
-        boxes = sorted((up(bx) for bx in front_small), key=lambda bx: bx[2] * bx[3], reverse=True)
-        boxes = boxes[:LIVE_MAX_FACES]
-        side_boxes = [up(bx) for bx in side_small][:LIVE_MAX_FACES]
-
-        dt = min(max(now - self.last_update, 0.02), 1.0) if self.last_update else 0.2
-        self.last_update = now
-        a_box = 1.0 - math.exp(-dt / 0.15)
-
-        free = list(self.tracks)
-
-        def match(bx):
-            best, best_iou = None, 0.3
-            for tr in free:
-                v = _iou(tr["box"], bx)
-                if v > best_iou:
-                    best, best_iou = tr, v
-            return best
-
-        for box in boxes:
-            best = match(box)
-            x, y, bw, bh = box
-            pad = int(0.12 * max(bw, bh))
-            crop = img[max(0, y - pad):min(h, y + bh + pad), max(0, x - pad):min(w, x + bw + pad)]
-            if crop.size == 0:
-                continue
-            try:
-                scores = probs_to_scores(ensemble_probs(self.models, [crop], mirror=True))
-            except Exception:
-                continue
-            if best is None:
-                # a new face is shown from its very first reading, with no smoothing delay
-                self.tracks.append(
-                    {"box": [float(v) for v in box], "scores": scores, "seen": now, "born": now, "front": now, "hits": 1}
-                )
-            else:
-                free.remove(best)
-                best["box"] = [(1 - a_box) * o + a_box * n for o, n in zip(best["box"], box)]
-                if best["scores"] is None:  # a side-view face has turned towards the camera: read it at once
-                    best["scores"], best["born"] = scores, now
-                else:
-                    # time-based smoothing (independent of frame rate); quicker while the face is new
-                    tau = LIVE_TAU_NEW if now - best["born"] < 1.0 else LIVE_TAU
-                    a_score = 1.0 - math.exp(-dt / tau)
-                    best["scores"] = {
-                        k: (1 - a_score) * best["scores"].get(k, scores[k]) + a_score * scores[k] for k in scores
-                    }
-                best["seen"] = best["front"] = now
-                best["hits"] += 1
-
-        for box in side_boxes:
-            best = match(box)
-            if best is None:
-                self.tracks.append(
-                    {"box": [float(v) for v in box], "scores": None, "seen": now, "born": now, "front": 0.0, "hits": 1}
-                )
-            else:
-                free.remove(best)
-                best["box"] = [(1 - a_box) * o + a_box * n for o, n in zip(best["box"], box)]
-                best["seen"] = now
-                best["hits"] += 1
-
-        self.tracks = [t for t in self.tracks if now - t["seen"] <= 1.0]
-        # a side-only face must be seen twice before it is shown (filters one-off false alarms);
-        # a short grace period avoids flicker when a detection drops for a moment
-        live = [
-            t for t in self.tracks
-            if now - t["seen"] <= 0.6 and (t["scores"] is not None or t["hits"] >= 2)
-        ]
-        live.sort(key=lambda t: t["box"][0])  # left to right, like the full analysis
-        readable = [i for i, t in enumerate(live) if t["scores"] is not None and now - t["front"] <= 0.5]
-        faces = [
-            {"region": {"x": int(t["box"][0]), "y": int(t["box"][1]), "w": int(t["box"][2]), "h": int(t["box"][3])}}
-            for t in live
-        ]
-        labels = [
-            classify_emotions(t["scores"])["short"] if i in readable else "Side view"
-            for i, t in enumerate(live)
-        ]
-        main = max(readable, key=lambda i: live[i]["box"][2] * live[i]["box"][3]) if readable else 0
-        with self.lock:
-            self.faces, self.labels, self.main = faces, labels, main
-            self.scores = dict(live[main]["scores"]) if readable else None
-
-    def read(self) -> dict:
-        with self.lock:
-            return {
-                "faces": list(self.faces),
-                "labels": list(self.labels),
-                "main": self.main,
-                "scores": dict(self.scores) if self.scores else None,
-            }
-
-    def take_best(self, k: int) -> list:
-        """The k sharpest of the recent frames, oldest first (copies, exactly as the camera sent them)."""
-        with self.lock:
-            items = list(self.buffer)
-            if not items and self.raw is not None:
-                items = [(0.0, self.raw)]
-        if not items:
-            return []
-        top = sorted(range(len(items)), key=lambda i: items[i][0], reverse=True)[:k]
-        return [items[i][1].copy() for i in sorted(top)]
-
-
-def make_live_callback(state: LiveState):
-    """Video callback: mirror the frame, draw the latest face boxes and labels, hand it back."""
-    def callback(frame):
-        raw = frame.to_ndarray(format="rgb24")
-        mirrored = cv2.flip(raw, 1)
-        state.push_frame(raw, mirrored)
-        data = state.read()
-        out = mirrored
-        if data["faces"]:
-            out = draw_clean_bounding(mirrored, data["faces"], True, data["labels"], data["main"])
-        return av.VideoFrame.from_ndarray(out, format="rgb24")
-    return callback
-
-
-def _live_readout(state: LiveState, active: bool):
-    """Live emotion percentages next to the video. Re-runs about twice a second while streaming."""
-    if not active:
-        st.markdown(
-            '<div class="live-empty">Press START under the video to turn the camera on.</div>',
-            unsafe_allow_html=True,
-        )
-        return
-    data = state.read()
-    scores = data["scores"]
-    if not scores:
-        msg = (
-            "Face seen, but turned away. Look towards the camera for an emotion reading."
-            if data["faces"]
-            else "Looking for a face... face the camera in good light."
-        )
-        st.markdown(f'<div class="live-empty">{msg}</div>', unsafe_allow_html=True)
-        return
-    cls = classify_emotions(scores)
-    ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
-    rows = "".join(
-        f'<div class="live-row"><div class="live-lab">{EMOJI_MAP.get(k, "")} {k.capitalize()}</div>'
-        f'<div class="live-track"><div class="live-fill" style="width:{max(v, 1.5):.1f}%"></div></div>'
-        f'<div class="live-val">{v:.1f}%</div></div>'
-        for k, v in ranked
-    )
-    extra = ""
-    if len(data["faces"]) > 1:
-        extra = f'<div class="live-note">{len(data["faces"])} faces in view. The bars show the largest face.</div>'
-    st.markdown(
-        f'<div class="live-top"><span class="raw-emoji">{cls["emoji"]}</span>{cls["title"]} '
-        f'<small>({cls["conf"]:.0f}%)</small></div>{rows}{extra}',
-        unsafe_allow_html=True,
-    )
-
-
-if hasattr(st, "fragment"):  # Streamlit 1.37+: refresh only this panel, not the whole page
-    live_readout_running = st.fragment(run_every=0.25)(_live_readout)
-    live_readout_static = st.fragment(_live_readout)
-else:
-    live_readout_running = live_readout_static = _live_readout
+def get_live_cam():
+    """Write the camera page to a temp folder and register it as a Streamlit component."""
+    folder = Path(tempfile.gettempdir()) / "fei_live_cam"
+    folder.mkdir(parents=True, exist_ok=True)
+    page = folder / "index.html"
+    if not page.exists() or page.read_text(encoding="utf-8") != LIVE_CAM_HTML:
+        page.write_text(LIVE_CAM_HTML, encoding="utf-8")
+    return components.declare_component("fei_live_cam", path=str(folder))
 
 
 # =============================================================================
@@ -1039,23 +1098,6 @@ def generate_companion_reply(
 # =============================================================================
 
 is_dark = st.session_state.theme == "Dark"
-
-# Smooth mode switches off the heaviest visual effects (mouse ripples, blur, shimmer, floating bubbles)
-# so the page and the live video stay fluid. It is on by default and can be turned off in the top bar.
-if "smooth_mode" not in st.session_state:
-    st.session_state.smooth_mode = True
-smooth = bool(st.session_state.smooth_mode)
-smooth_css = """
-.amb-bubble, .bubble-ambient-container { display: none !important; }
-* { backdrop-filter: none !important; -webkit-backdrop-filter: none !important; }
-.ambient-glow-text, .ambient-bubble, .banner-title, .shimmer-txt, .stat-value, .feed-header-title, .btn-shimmer-text,
-div[data-testid="stButton"] button p, div[data-testid="stButton"] button span,
-div[data-testid="stDownloadButton"] button p, div[data-testid="stDownloadButton"] button span,
-div[data-testid="stFormSubmitButton"] button p, div[data-testid="stFormSubmitButton"] button span {
-    animation: none !important;
-    background-position: 0% 50% !important;
-}
-""" if smooth else ""
 
 if is_dark:
     app_bg = "radial-gradient(circle at 50% 12%, #081b33 0%, #030a16 50%, #01040a 100%)"
@@ -1639,7 +1681,6 @@ div[data-testid="stForm"] {{
     font-weight: 800;
     letter-spacing: -0.01em;
 }}
-{smooth_css}
 </style>
 
 <div class="bubble-ambient-container">
@@ -1660,7 +1701,6 @@ div[data-testid="stForm"] {{
 components.html(
     f"""
     <script>
-    const SMOOTH = {str(smooth).lower()};
     let parentDoc;
     try {{
         parentDoc = window.parent.document;
@@ -1739,16 +1779,9 @@ components.html(
     window._shieldInterval = setInterval(() => {{
         shieldButtonEmojis();
         sanitizeUploaderColors();
-    }}, SMOOTH ? 500 : 120);
+    }}, 120);
 
     if (parentDoc) {{
-        const oldWake0 = parentDoc.getElementById('water-swimming-halo');
-        if (oldWake0) oldWake0.remove();
-        if (window._swimMouseMove) parentDoc.removeEventListener('mousemove', window._swimMouseMove);
-        if (window.spawnBubbleBurst) parentDoc.removeEventListener('click', window.spawnBubbleBurst, true);
-    }}
-
-    if (parentDoc && !SMOOTH) {{
         const oldWake = parentDoc.getElementById('water-swimming-halo');
         if (oldWake) oldWake.remove();
 
@@ -1892,14 +1925,7 @@ components.html(
 # 1. TOP RIGHT: DARK / LIGHT SWITCH CAPSULES
 # =============================================================================
 
-_, col_smooth, col_dark, col_light = st.columns([4.2, 2.2, 1.8, 1.8])
-
-with col_smooth:
-    st.markdown('<div class="theme-capsule-wrapper">', unsafe_allow_html=True)
-    if st.button(f"⚡ Smooth: {'On' if smooth else 'Off'}", key="smooth_btn"):
-        st.session_state.smooth_mode = not smooth
-        st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
+_, col_dark, col_light = st.columns([6.4, 1.8, 1.8])
 
 with col_dark:
     is_d_active = "active-capsule theme-capsule-wrapper" if is_dark else "theme-capsule-wrapper"
@@ -2335,97 +2361,54 @@ photos = []  # list of (file, is_camera)
 burst_mode = False  # True for a live burst: always averaged
 
 if st.session_state.active_mode == "live":
-    use_stream = False
-    if WEBRTC_OK:
-        cam_style = st.radio(
-            "Camera mode",
-            ["🎥 Real-time stream", "📷 Classic snapshot"],
-            horizontal=True,
-            key="cam_style",
-            label_visibility="collapsed",
+    st.session_state.setdefault("cam_token", 0)
+    st.session_state.setdefault("cam_done", 0)
+
+    cam_slot = st.container()  # the video sits above the buttons, but is drawn after the button is read
+
+    _, take_col, discard_col, _ = st.columns([1, 2, 2, 1])
+    with take_col:
+        if st.button("📸 Take photo", key="take_photo_btn"):
+            st.session_state.cam_token += 1
+    with discard_col:
+        if st.session_state.get("live_snapshots"):
+            if st.button("🗑️ Discard photo", key="live_discard_btn"):
+                st.session_state.live_snapshots = None
+
+    with cam_slot:
+        cam_value = get_live_cam()(
+            capture_token=int(st.session_state.cam_token),
+            dark=bool(is_dark),
+            card=card_bg,
+            border=capsule_border,
+            text=text_main,
+            muted=text_muted,
+            accent=accent_tint,
+            key="live_cam",
+            default=None,
         )
-        use_stream = cam_style.startswith("🎥")
-    else:
-        st.info(
-            "Real-time mode needs two extra packages: pip install streamlit-webrtc av. "
-            "Using the classic snapshot camera for now."
+
+    # A new photo arrives as a few JPEG frames from the browser
+    if isinstance(cam_value, dict) and int(cam_value.get("token", 0)) > st.session_state.cam_done:
+        st.session_state.cam_done = int(cam_value["token"])
+        shots = []
+        for data_url in cam_value.get("frames", []):
+            try:
+                shots.append(base64.b64decode(str(data_url).split(",", 1)[1]))
+            except Exception:
+                continue
+        if shots:
+            st.session_state.live_snapshots = shots
+
+    snaps = st.session_state.get("live_snapshots")
+    if snaps:
+        photos = [(SnapshotFile(b, f"live_frame_{i + 1}.jpg"), True) for i, b in enumerate(snaps)]
+        burst_mode = len(photos) > 1
+        st.caption(
+            f"Full analysis of your photo ({len(photos)} frames averaged for accuracy)."
+            if burst_mode
+            else "Full analysis of your photo."
         )
-
-    if use_stream:
-        if "live_state" not in st.session_state:
-            st.session_state.live_state = LiveState(load_hse_models())
-        live_state = st.session_state.live_state
-
-        col_vid, col_read = st.columns([1.35, 1], gap="medium")
-        with col_vid:
-            ctx = webrtc_streamer(
-                key="live-emotion",
-                mode=WebRtcMode.SENDRECV,
-                rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
-                media_stream_constraints={
-                    "video": {"width": {"ideal": 1280}, "height": {"ideal": 720}, "frameRate": {"ideal": 30}},
-                    "audio": False,
-                },
-                video_frame_callback=make_live_callback(live_state),
-                async_processing=True,
-            )
-            playing = bool(ctx.state.playing)
-
-            btn_cap, btn_clear = st.columns(2)
-            with btn_cap:
-                if st.button("📸 Capture & analyse", key="live_capture_btn", disabled=not playing):
-                    n_faces = len([lab for lab in live_state.read()["labels"] if lab != "Side view"])
-                    # one face: average a burst of the sharpest recent frames; a group: one sharpest frame
-                    frames = live_state.take_best(1 if n_faces > 1 else LIVE_BURST)
-                    encoded = []
-                    for fr in frames:
-                        ok, buf = cv2.imencode(
-                            ".png", cv2.cvtColor(fr, cv2.COLOR_RGB2BGR), [cv2.IMWRITE_PNG_COMPRESSION, 1]
-                        )
-                        if ok:
-                            encoded.append(buf.tobytes())
-                    if encoded:
-                        st.session_state.live_snapshots = encoded
-                    else:
-                        st.warning("No video frame received yet. Wait a second and try again.")
-            with btn_clear:
-                if st.session_state.get("live_snapshots"):
-                    if st.button("🗑️ Discard capture", key="live_discard_btn"):
-                        st.session_state.live_snapshots = None
-                        st.rerun()
-            if st.session_state.get("live_snapshots"):
-                n_snap = len(st.session_state.live_snapshots)
-                st.caption(
-                    f"Below: the full analysis of your last capture ({n_snap} sharpest frames averaged)."
-                    if n_snap > 1
-                    else "Below: the full analysis of your last capture (sharpest recent frame)."
-                )
-
-        with col_read:
-            with st.container(key="live_panel"):
-                st.markdown(
-                    '<div class="ambient-glow-text" style="font-weight:800; font-size:1.05rem; margin-bottom:8px;">'
-                    'Live read</div>',
-                    unsafe_allow_html=True,
-                )
-                (live_readout_running if playing else live_readout_static)(live_state, playing)
-                st.markdown(
-                    '<div class="live-note">Live preview: fast models, tracked and smoothed per face. '
-                    'Press <b>Capture and analyse</b> for the full analysis: it keeps the sharpest recent frames, '
-                    'runs every model and crop, and averages them, then opens the coach and history.</div>',
-                    unsafe_allow_html=True,
-                )
-
-        snaps = st.session_state.get("live_snapshots")
-        if snaps:
-            photos = [(SnapshotFile(b, f"live_frame_{i + 1}.png"), True) for i, b in enumerate(snaps)]
-            burst_mode = len(photos) > 1
-    else:
-        _, cam_col, _ = st.columns([1, 2.4, 1])
-        with cam_col:
-            camera_photo = st.camera_input("Capture Portrait", label_visibility="collapsed", key="cam_input_feed")
-            if camera_photo is not None:
-                photos = [(camera_photo, True)]
 else:
     uploaded_files = st.file_uploader(
         f"Upload an image (JPG, PNG). Add up to {MAX_PHOTOS} photos of the same person to average them.",
@@ -2905,5 +2888,6 @@ if len(st.session_state.history) > 0:
             f'</div>'
         )
         st.markdown(card_html, unsafe_allow_html=True)
+
 
 
