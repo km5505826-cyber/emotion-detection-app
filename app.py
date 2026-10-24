@@ -153,7 +153,9 @@ def load_hse_models():
     loaded = []
     for name in HSE_MODEL_NAMES:
         try:
-            loaded.append(HSEmotionRecognizer(model_name=name))
+            rec = HSEmotionRecognizer(model_name=name)
+            rec._fei_name = name
+            loaded.append(rec)
         except Exception:
             continue  # an unavailable optional model must never stop the app
     if not loaded:
@@ -164,7 +166,7 @@ def load_hse_models():
 load_hse_models()
 
 
-def ensemble_probs(models, crops_rgb: list, mirror: bool = True) -> np.ndarray:
+def ensemble_probs(models, crops_rgb: list, mirror: bool = True, detail: dict = None) -> np.ndarray:
     """Average probabilities over models x crops (x original + mirrored when mirror=True).
     Takes the models as an argument so the live video thread never touches Streamlit."""
     collected = []
@@ -177,14 +179,16 @@ def ensemble_probs(models, crops_rgb: list, mirror: bool = True) -> np.ndarray:
                 p = np.asarray(p, dtype=np.float64).flatten()
                 if p.shape[0] == len(HSE_LABELS):
                     collected.append(p)
+                    if detail is not None:
+                        detail.setdefault(getattr(m, "_fei_name", "model"), []).append(p)
     if not collected:
         raise ValueError("no predictions")
     return np.mean(collected, axis=0)
 
 
-def predict_emotion_probs(crops_rgb: list) -> np.ndarray:
+def predict_emotion_probs(crops_rgb: list, detail: dict = None) -> np.ndarray:
     """Full-quality prediction used for uploaded and captured photos."""
-    return ensemble_probs(load_hse_models(), crops_rgb, mirror=True)
+    return ensemble_probs(load_hse_models(), crops_rgb, mirror=True, detail=detail)
 
 
 def probs_to_scores(probs: np.ndarray) -> dict:
@@ -259,15 +263,18 @@ def run_deepface_inference(image_bytes: bytes, width: int, height: int):
             continue
 
         try:
-            probs = predict_emotion_probs(crops)
+            per_model = {}
+            probs = predict_emotion_probs(crops, detail=per_model)
         except Exception:
             continue
 
         emo = probs_to_scores(probs)
+        model_scores = {name: probs_to_scores(np.mean(v, axis=0)) for name, v in per_model.items()}
 
         results.append({
             "region": {"x": x, "y": y, "w": w, "h": h},
             "emotion": emo,
+            "models": model_scores,
         })
 
     latency_ms = (time.time() - t0) * 1000
@@ -2501,6 +2508,7 @@ else:
     face_list_html = ""
     gallery = []
     quality_target = None  # (image, region) for photo-quality hints
+    details_face = None    # the face whose per-model readings are shown
 
     if average_mode:
         # ---------------- MULTI-PHOTO AVERAGING ----------------
@@ -2560,6 +2568,7 @@ else:
                 gallery.append((frame, f"Photo {p['idx']}: {p['cls']['short']}"))
             biggest = max(per_photo, key=lambda p: face_area(p["face"]))
             quality_target = (biggest["image"], biggest["face"]["region"])
+            details_face = biggest["face"]
 
     else:
         # ---------------- SINGLE PHOTO (ONE OR MANY FACES) ----------------
@@ -2614,6 +2623,7 @@ else:
                 ("Resolution", f"{d['W']}x{d['H']}"),
             ]
             quality_target = (image_np, faces[focus_idx]["region"])
+            details_face = faces[focus_idx]
 
     # ---------------------------------------------------------------------
     # RESULTS
@@ -2623,6 +2633,19 @@ else:
         if quality_target is not None:
             for note in assess_quality(quality_target[0], quality_target[1]):
                 st.info(note)
+
+        if details_face and details_face.get("models"):
+            with st.expander("🔬 Model details: what each model thinks"):
+                st.caption(
+                    "The final result averages these models. If one disagrees strongly, it is pulling the result off. "
+                    "All values are percentages for the main face."
+                )
+                rows = {"Final (average)": details_face["emotion"]}
+                rows.update(details_face["models"])
+                table = pd.DataFrame(rows).T.round(1)
+                table.columns = [c.capitalize() for c in table.columns]
+                table.insert(0, "Top", [max(r.items(), key=lambda kv: kv[1])[0].capitalize() for r in rows.values()])
+                st.dataframe(table, use_container_width=True)
 
         calibrated_emotions = primary_cls["scores"]
         dominant_label = primary_cls["dominant"]
